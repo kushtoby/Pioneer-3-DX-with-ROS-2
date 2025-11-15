@@ -247,7 +247,7 @@ git push
 
 ---
 
-STEP 6: Building the Package &amp; Running Nodes
+# STEP 6: Building the Package &amp; Running Nodes
 
 ```
 cd ~/ros2_ws

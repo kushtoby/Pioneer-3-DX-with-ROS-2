@@ -225,8 +225,8 @@ Always start by pulling the latest version from GitHub BEFORE pushing your chang
 cd ~/ros2_ws/src/pioneer3
 git pull
 ```
-Enter your GitHub Username
-Paste you Token into the Terminal: **ctrl** + **Shift** + **V** then press **Enter**
+- Enter your GitHub Username
+- Paste you Token into the Terminal: **ctrl** + **Shift** + **V** then press **Enter**
 
 ## 5.2 Push
 ```

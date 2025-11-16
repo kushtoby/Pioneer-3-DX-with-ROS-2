@@ -17,7 +17,7 @@ Sensor: LiDAR RPLIDAR A1M8
 	- 3D-Printed design piece needed to raise sensor above P3's antenna 
 
 Project Plan: Create a ROS2 Package that can control the robot
-- pioneer_aria (driver) 
+- pioneer_aria Node (driver) 
 - Teleop Node (Manual Control)
 - Sensor Node (Collect sensor data and publish it)
 -  Display Node

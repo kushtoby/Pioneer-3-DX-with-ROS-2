@@ -55,7 +55,7 @@ source ~/.bashrc
 
 ---
 
-# 4. Assumptions and Conventions
+### 4. Assumptions and Conventions
 - All commands are run on the robot’s onboard PC unless otherwise noted.
 - The ROS 2 workspace is located at:
 ```
@@ -266,7 +266,7 @@ cd ~
 nano ~/.bashrc
 ```
 
-Add the following lines at the end of the file:
+## 9.2 Add the following lines at the end of the file:
 ```
 # Source ROS 2 Jazzy
 source /opt/ros/jazzy/setup.bash
@@ -274,7 +274,7 @@ source /opt/ros/jazzy/setup.bash
 if [ -f ~/ros2_ws/install/setup.bash ]; then
 source ~/ros2_ws/install/setup.bash
 ```
-Save and exit (Ctrl+X, Y, Enter) and then apply the changes:
+## 9.3 Save and exit (Ctrl+X, Y, Enter) and then apply the changes:
 ```
 source ~/.bashrc
 ```

@@ -408,18 +408,22 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 ## 14.3 Remote Startup (no SSH)
 
-If you do not want to SSH into the robot, you can still drive the robot and use RViz from your laptop by running a **multi-machine ROS 2 setup**. In this workflow:
+If you do not want to SSH into the robot, you can still drive the robot and use RViz from your laptop by running a multi-machine ROS 2 setup. In this workflow:
 
-- The **robot** runs the bringup (drivers, LiDAR node, TF publishers, etc.)
-- Your **laptop** runs **teleop** and **RViz2** locally
+- The robot runs the bringup (drivers, LiDAR node, TF publishers, etc.)
+- Your aptop runs teleop and RViz2 locally
 - Both machines must be on the **same network** and the same **ROS_DOMAIN_ID**
-- Both machines should use the same **RMW implementation** (recommended: CycloneDDS)
+- Both machines should use the same RMW implementation (recommended: CycloneDDS)
 
 #### 14.3.1 One-time install (Robot + Laptop)
 Install CycloneDDS RMW (ROS 2 Jazzy):
 ```
 sudo apt update
 sudo apt install -y ros-jazzy-rmw-cyclonedds-cpp
+```
+(Optional) Verify it is installed:
+```
+ros2 pkg list | grep cyclonedds
 ```
 ### 14.3.2 Environment setup (Robot + Laptop)
 In every terminal used for ROS 2 (or add these lines to `~/.bashrc` on both machines):

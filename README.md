@@ -369,9 +369,10 @@ If you added the sourcing lines to ~/.bashrc, new terminals will source this aut
 --- 
 
 # 14. Running the System
-There are two ways to run the system:
+There are three ways to run the system:
 - Directly on the pioneer3 (Testing & Developement - Display, Keyboard, Mouse plugged into robot)
 - Remote control through SSH (Mobile robot controlled by computer on the same network)
+- Remote control directly from computer without SSH (Mobile robot controlled by computer on the same network)
 
 ## 14.1 Direct Startup
 On the robot’s PC the first terminal window, start the launch file
@@ -385,7 +386,7 @@ cd ~/ros2_ws
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 
-## 14.2 Remote Startup
+## 14.2 Remote Startup (SSH)
 In the first terminal window:
 ```
 ssh -X easel@192.168.1.31
@@ -405,7 +406,80 @@ Input the password, then:
 cd ~/ros2_ws
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
+## 14.3 Remote Startup (no SSH)
 
+If you do not want to SSH into the robot, you can still drive the robot and use RViz from your laptop by running a **multi-machine ROS 2 setup**. In this workflow:
+
+- The **robot** runs the bringup (drivers, LiDAR node, TF publishers, etc.)
+- Your **laptop** runs **teleop** and **RViz2** locally
+- Both machines must be on the **same network** and the same **ROS_DOMAIN_ID**
+- Both machines should use the same **RMW implementation** (recommended: CycloneDDS)
+
+#### 14.3.1 One-time install (Robot + Laptop)
+Install CycloneDDS RMW (ROS 2 Jazzy):
+```
+sudo apt update
+sudo apt install -y ros-jazzy-rmw-cyclonedds-cpp
+```
+### 14.3.2 Environment setup (Robot + Laptop)
+In every terminal used for ROS 2 (or add these lines to `~/.bashrc` on both machines):
+```
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=7
+export ROS_LOCALHOST_ONLY=0
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+```
+Restart the ROS 2 daemon after changing env vars:
+```
+ros2 daemon stop
+ros2 daemon start
+```
+### 14.3.3 Start bringup on the robot (Robot PC)
+On the robot:
+```
+cd ~/ros2_ws
+ros2 launch pioneer3 pioneer3_bringup.launch.py
+```
+Confirm the robot is publishing key topics:
+```
+ros2 topic list | egrep "(/scan|/tf|/tf_static|/cmd_vel)"
+```
+### 14.3.4 Drive from the laptop (Laptop PC)
+On the laptop:
+```
+cd ~/ros2_ws
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
+```
+(Optional sanity check)
+```
+ros2 topic echo /cmd_vel --once
+```
+### 14.3.5 RViz2 on the laptop (Laptop PC)
+Run RViz locally on the laptop (no SSH / no X-forwarding needed):
+```
+rviz2
+```
+In RViz2:
+- Set **Fixed Frame** to a valid frame (common options: `laser`, `base_link`, `odom`)
+- Add **LaserScan** display with topic `/scan`
+- (Optional) Add **TF** display
+
+In this implementation, we use 'laser'
+
+Sanity check that the laptop is receiving LiDAR + TF:
+```
+ros2 topic list | egrep "(/scan|/tf|/tf_static)"
+ros2 topic echo /scan --once
+```
+### 14.3.6 Common issues (no SSH mode)
+- If the laptop cannot see `/scan` or `/tf`, confirm both machines match:
+  - `ROS_DOMAIN_ID`
+  - `RMW_IMPLEMENTATION` (CycloneDDS recommended)
+  - `ROS_LOCALHOST_ONLY=0`
+- After any env change, run:
+  - `ros2 daemon stop`
+  - `ros2 daemon start`
+- If RViz opens but shows nothing, the most common fix is setting **Fixed Frame** correctly (often `laser` if the scan header uses `frame_id: laser`).
 ---
 
 # 15. Troubleshooting Guide

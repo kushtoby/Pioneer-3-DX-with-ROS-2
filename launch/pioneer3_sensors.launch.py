@@ -19,7 +19,6 @@ def generate_launch_description():
 
     declare = [
         DeclareLaunchArgument('use_oak', default_value='true'),
-        DeclareLaunchArgument('use_rear', default_value='false'),  # set true when C920 plugged
         DeclareLaunchArgument('rear_device', default_value='/dev/video0'),
         DeclareLaunchArgument('rear_width', default_value='640'),
         DeclareLaunchArgument('rear_height', default_value='480'),
@@ -40,7 +39,6 @@ def generate_launch_description():
         executable='v4l2_camera_node',
         name='rear_camera',
         output='screen',
-        condition=IfCondition(use_rear),
         parameters=[
             {'video_device': rear_device},
             {'image_size': [rear_width, rear_height]},

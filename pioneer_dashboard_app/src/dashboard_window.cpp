@@ -89,7 +89,7 @@ void DashboardWindow::setupUi() {
   auto* tg = new QGridLayout(topicsBox);
 
   front_topic_ = new QLineEdit("/oak/rgb/image_raw");
-  rear_topic_  = new QLineEdit("/oak/stereo/image_raw"); // change to your rear cam topic later
+  rear_topic_  = new QLineEdit("/rear/image_raw"); // change to your rear cam topic later
   scan_topic_  = new QLineEdit("/scan");
   cmdvel_topic_= new QLineEdit("/cmd_vel");
 
@@ -184,10 +184,13 @@ void DashboardWindow::setupUi() {
 
   setWindowTitle("Pioneer Dashboard (Front + Rear PiP + LiDAR + Teleop)");
   resize(1400, 800);
+
+  QTimer::singleShot(0, this, SLOT(onApplyTopics()));
 }
 
 void DashboardWindow::setupRos() {
-  onApplyTopics();
+  // nothing needed here (or keep ROS setup that doesn't subscribe)
+  //onApplyTopics();
 }
 
 static QImage cvMatToQImageRGB(const cv::Mat& bgr) {

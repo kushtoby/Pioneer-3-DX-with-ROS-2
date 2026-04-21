@@ -13,7 +13,7 @@ def generate_launch_description():
     sllidar_launch_path = os.path.join(
         sllidar_share_dir,
         'launch',
-        'view_sllidar_a1_launch.py'
+        'sllidar_a1_launch.py'
     )
 
     lidar_launch = IncludeLaunchDescription(

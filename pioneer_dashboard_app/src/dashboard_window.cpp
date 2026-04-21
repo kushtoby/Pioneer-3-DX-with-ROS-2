@@ -264,6 +264,7 @@ void DashboardWindow::onApplyTopics() {
 
   auto image_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
   auto sensor_qos = rclcpp::SensorDataQoS();
+  auto scan_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
   
   front_sub_ = node_->create_subscription<sensor_msgs::msg::Image>(
     front_topic_->text().toStdString(), image_qos,
@@ -274,8 +275,10 @@ void DashboardWindow::onApplyTopics() {
     std::bind(&DashboardWindow::rearImgCb, this, std::placeholders::_1));
     
   scan_sub_ = node_->create_subscription<sensor_msgs::msg::LaserScan>(
-    scan_topic_->text().toStdString(), sensor_qos,
-    std::bind(&DashboardWindow::scanCb, this, std::placeholders::_1));
+    scan_topic_->text().toStdString(),
+    scan_qos,
+    std::bind(&DashboardWindow::scanCb, this, std::placeholders::_1)
+  );
 }
 
 void DashboardWindow::publishStop() {

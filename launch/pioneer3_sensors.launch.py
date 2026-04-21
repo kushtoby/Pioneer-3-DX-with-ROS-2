@@ -13,15 +13,15 @@ def generate_launch_description():
     use_oak = LaunchConfiguration('use_oak')
     use_rear = LaunchConfiguration('use_rear')
     rear_device = LaunchConfiguration('rear_device')
-    rear_width = LaunchConfiguration('rear_width')
-    rear_height = LaunchConfiguration('rear_height')
+    # rear_width = LaunchConfiguration('rear_width')
+    # rear_height = LaunchConfiguration('rear_height')
     rear_format = LaunchConfiguration('rear_format')
 
     declare = [
         DeclareLaunchArgument('use_oak', default_value='true'),
         DeclareLaunchArgument('rear_device', default_value='/dev/video0'),
-        DeclareLaunchArgument('rear_width', default_value='640'),
-        DeclareLaunchArgument('rear_height', default_value='480'),
+        # DeclareLaunchArgument('rear_width', default_value='640'),
+        # DeclareLaunchArgument('rear_height', default_value='480'),
         DeclareLaunchArgument('rear_format', default_value='YUYV'),
     ]
 
@@ -41,7 +41,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             {'video_device': rear_device},
-            {'image_size': [rear_width, rear_height]},
+            {'image_size': [640, 480]},
             {'pixel_format': rear_format},
         ],
         remappings=[

@@ -19,11 +19,16 @@ def generate_launch_description():
 
     declare = [
         DeclareLaunchArgument('use_oak', default_value='true'),
-        DeclareLaunchArgument('rear_device', default_value='/dev/video0'),
-        # DeclareLaunchArgument('rear_width', default_value='640'),
+        DeclareLaunchArgument('use_rear', default_value='true'),
+	DeclareLaunchArgument(
+	    'rear_device',
+	    default_value='/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_41F47D8F-video-index0'
+	),
+	# DeclareLaunchArgument('rear_width', default_value='640'),
         # DeclareLaunchArgument('rear_height', default_value='480'),
         DeclareLaunchArgument('rear_format', default_value='YUYV'),
     ]
+
 
     # Front camera (OAK) via launch include
     depthai_share = get_package_share_directory('depthai_ros_driver')
@@ -39,9 +44,10 @@ def generate_launch_description():
         executable='v4l2_camera_node',
         name='rear_camera',
         output='screen',
-        parameters=[
+        condition=IfCondition(use_rear),
+	parameters=[
             {'video_device': rear_device},
-            {'image_size': [640, 480]},
+            {'image_size': [320, 240]},
             {'pixel_format': rear_format},
         ],
         remappings=[

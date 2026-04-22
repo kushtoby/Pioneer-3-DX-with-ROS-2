@@ -1,62 +1,47 @@
-# Pioneer 3‑DX with ROS 2 Jazzy — Build, Bringup, and Operator Dashboard (Live Experiments)
+# Pioneer 3-DX Live Experiments Stack (ROS 2 Jazzy)
+## Build from scratch → Auto-bringup on boot → Laptop operator dashboard
 
-This is an end‑to‑end, **field‑ready** build & operations manual for running a Pioneer 3‑DX robot in **live experiments** (not tied to a class).  
-It covers: base control, LiDAR, front + rear cameras, a standalone operator dashboard (camera + LiDAR + teleop + torch), and headless auto‑start on boot.
+## Project provenance (where this started)
 
----
+This work **started from** the original Pioneer 3-DX course repository by **z1910335**:
+- Original repo (starting point): https://github.com/z1910335/Pioneer-3-DX-with-ROS-2
 
-## What you will achieve
-
-After completing this manual, you can:
-
-- Boot the robot and have it **auto‑start** sensors + base control (headless).
-- From a laptop on the same network, run a **standalone operator dashboard** that:
-  - Displays **front camera** as the main view
-  - Displays **rear camera** in **picture‑in‑picture (PiP)**
-  - Displays a **mini LiDAR** view (LaserScan)
-  - Provides **teleop controls** (deadman + speed sliders + direction buttons + STOP)
-  - Triggers a **torch/aux button** via a ROS service call
-- Use a **laptop‑first workflow**: edit → push → robot pulls → rebuild → restart service.
+That original repo focused on a baseline bringup (base control + LiDAR + RViz + keyboard teleop).
+**This repo extends it for live experiments**, adding:
+- Headless bringup on boot (`systemd`) for field use
+- Dual-camera pipeline (front OAK-D-Pro + rear USB camera)
+- Standalone Qt operator dashboard (front + PiP rear + mini LiDAR + teleop + torch)
+- Laptop-first ops workflow (multi-machine ROS 2 + repeatable commands)
 
 ---
 
-## System architecture at a glance
+# 0) Hardware + network assumptions
 
-### Core ROS pieces
-
-- **Base controller:** `pioneer3/base_controller` (C++ + ARIA)
-  - Subscribes: `/cmd_vel`
-  - Provides: `/pioneer_base/torch_pulse` (`std_srvs/Trigger`)
-  - Connects via: `-robotPort /dev/ttyS0` (typical onboard Pioneer serial)
-
-- **LiDAR:** `sllidar_ros2` → publishes `/scan` (`sensor_msgs/LaserScan`)
-
-- **Front camera:** `depthai_ros_driver` (OAK‑D‑Pro) → publishes `/oak/rgb/image_raw`
-
-- **Rear camera:** `v4l2_camera` (USB webcam) → publishes `/rear/image_raw`
-
-- **Operator dashboard:** `pioneer_dashboard_app` (Qt5 Widgets + ROS 2 + OpenCV)
-  - Subscribes: `/oak/rgb/image_raw`, `/rear/image_raw`, `/scan`
-  - Publishes: `/cmd_vel`
-  - Calls: `/pioneer_base/torch_pulse`
-
----
-
-# Part A — Build & Setup (Robot PC)
-
-## A1. Hardware checklist
-
-- Pioneer 3‑DX with onboard PC (Ubuntu 24.04)
+## 0.1 Hardware
+- Pioneer 3‑DX with onboard PC
 - RPLIDAR A1 (USB)
 - OAK‑D‑Pro (USB)
-- Rear USB webcam (e.g., Logitech C920)
-- Optional: monitor + keyboard + mouse for initial setup
+- Rear USB webcam (C920 or similar)
+- Optional: monitor/keyboard/mouse for initial robot setup
 - Laptop on same network for operation
 
-## A2. OS + ROS
+## 0.2 Network
+- Robot and laptop on same Wi‑Fi/Ethernet subnet
+- We use:
+  - `ROS_DOMAIN_ID=7`
+  - `rmw_cyclonedds_cpp`
+  - subnet discovery
 
-- Ubuntu 24.04
-- ROS 2 Jazzy Desktop
+---
+
+# 1) Robot PC — Fresh install (Ubuntu 24.04 + ROS 2 Jazzy)
+
+## 1.1 Install ROS 2 Jazzy
+On robot:
+```bash
+sudo apt update
+sudo apt install -y ros-jazzy-desktop
+```
 
 Sanity check:
 ```bash
@@ -64,109 +49,145 @@ source /opt/ros/jazzy/setup.bash
 ros2 --help
 ```
 
-## A3. Workspace
-
-```bash
-mkdir -p ~/ros2_ws/src
-cd ~/ros2_ws
-```
-
-## A4. Permissions (serial + camera)
-
-```bash
-sudo usermod -a -G dialout $USER
-sudo usermod -a -G video $USER
-```
-Log out/in (or reboot) after adding groups.
-
-## A5. Base dependencies
-
+## 1.2 Base tools + rosdep
 ```bash
 sudo apt update
-sudo apt install -y git make g++ \
+sudo apt install -y git make g++ cmake \
   python3-colcon-common-extensions python3-rosdep python3-vcstool
-```
-
-Initialize rosdep (once):
-```bash
 sudo rosdep init || true
 rosdep update
 ```
 
-## A6. Clone the repo
-
+## 1.3 Permissions (serial + camera)
 ```bash
+sudo usermod -a -G dialout $USER
+sudo usermod -a -G video $USER
+```
+Log out/in (or reboot).
+
+## 1.4 Recommended DDS (robot + laptop)
+```bash
+sudo apt update
+sudo apt install -y ros-jazzy-rmw-cyclonedds-cpp
+```
+
+---
+
+# 2) Robot PC — Install sensor and camera dependencies
+
+## 2.1 LiDAR (RPLIDAR A1) driver
+We use `sllidar_ros2` in this stack.
+
+### Option A (recommended): build `sllidar_ros2` in the same workspace
+If this repo vendors it into `~/ros2_ws/src`, you’re done. If not:
+```bash
+cd ~/ros2_ws/src
+git clone https://github.com/Slamtec/sllidar_ros2.git
+```
+
+> If your LiDAR ever shows `SL_RESULT_OPERATION_TIMEOUT`, see Troubleshooting §9.
+
+## 2.2 Front camera (OAK‑D‑Pro): `depthai_ros_driver`
+Install via apt if available on your setup:
+```bash
+sudo apt update
+sudo apt install -y ros-jazzy-depthai-ros-driver
+```
+If apt is not available/desired, build from source (follow depthai_ros_driver docs).
+
+### 2.2.1 OAK permissions (udev rules)
+If you see “Insufficient permissions … X_LINK_UNBOOTED”:
+- Install depthai udev rules (method depends on the driver packaging)
+- Replug camera or reboot
+
+## 2.3 Rear camera (USB): `v4l2_camera`
+```bash
+sudo apt update
+sudo apt install -y ros-jazzy-v4l2-camera v4l-utils
+```
+
+Verify devices:
+```bash
+v4l2-ctl --list-devices
+ls -l /dev/video*
+```
+
+---
+
+# 3) Robot PC — Install ARIA (Pioneer base control)
+
+This project uses ARIA to send velocity commands to the Pioneer base.
+
+## 3.1 Install/build ARIA
+If ARIA is not installed, build/install it (your lab may already have it).
+Typical outcome expected by our build:
+- headers under `/usr/local/Aria/include`
+- library under `/usr/local/Aria/lib`
+
+Confirm:
+```bash
+ls /usr/local/Aria/include/Aria.h
+ls /usr/local/Aria/lib | grep -i Aria || true
+```
+
+---
+
+# 4) Get this repo + build the robot workspace
+
+## 4.1 Workspace
+```bash
+mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws/src
 git clone https://github.com/kushtoby/Pioneer-3-DX-with-ROS-2.git pioneer3
 ```
 
-## A7. Build
-
-Install deps:
+## 4.2 Install ROS deps + build
 ```bash
 cd ~/ros2_ws
 rosdep install --from-paths src --ignore-src -r -y
-```
-
-Build:
-```bash
 colcon build --symlink-install
 source install/setup.bash
 ```
 
 ---
 
-# Part B — Networking for real operation (Robot + Laptop)
+# 5) Standard environment (robot + laptop)
 
-Recommended environment variables on **both** robot and laptop:
-
-```bash
-export ROS_DOMAIN_ID=7
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-unset ROS_LOCALHOST_ONLY
-export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
-```
-
-After changes:
-```bash
-ros2 daemon stop
-ros2 daemon start
-```
-
-Add to `~/.bashrc` on robot + laptop for convenience:
+Add to `~/.bashrc` on BOTH machines:
 ```bash
 # ROS 2 Jazzy
 source /opt/ros/jazzy/setup.bash
 
-# Workspace overlays (if present)
+# Workspace overlay
 if [ -f ~/ros2_ws/install/setup.bash ]; then
   source ~/ros2_ws/install/setup.bash
 fi
 
-# Multi-machine ROS 2 (recommended)
+# Multi-machine ROS2 (recommended)
 export ROS_DOMAIN_ID=7
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 unset ROS_LOCALHOST_ONLY
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 ```
 
+Apply:
+```bash
+source ~/.bashrc
+ros2 daemon stop
+ros2 daemon start
+```
+
 ---
 
-# Part C — Launching the robot stack
+# 6) Robot bringup (manual)
 
-We run the robot in **headless mode** (drivers + sensors) and operate from the laptop.
+The **robot** runs a single launch file (headless) that starts:
+- base controller
+- LiDAR
+- OAK front camera
+- rear USB camera
 
-## C1. Robot launch files (what they do)
-
-- `pioneer3_robot.launch.py`  
-  Brings up: base + LiDAR + OAK + rear camera (and any required containers).  
-- `pioneer3_sensors.launch.py`  
-  Sensor subset (if you need it separately).  
-- `pioneer3_bringup.launch.py`  
-  Legacy bringup (if present).
-
-## C2. Manual bringup (robot)
-
+On robot:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
@@ -175,12 +196,9 @@ ros2 launch pioneer3 pioneer3_robot.launch.py
 
 ---
 
-# Part D — Auto‑start bringup on boot (Robot PC)
+# 7) Auto-start on boot (robot)
 
-This makes the robot “ready” after power‑on with no login steps.
-
-## D1. Start script
-
+## 7.1 Start script
 ```bash
 mkdir -p ~/bin
 nano ~/bin/start_pioneer_robot.sh
@@ -202,13 +220,11 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 exec ros2 launch pioneer3 pioneer3_robot.launch.py
 ```
 
-Make executable:
 ```bash
 chmod +x ~/bin/start_pioneer_robot.sh
 ```
 
-## D2. systemd service
-
+## 7.2 systemd service
 ```bash
 sudo nano /etc/systemd/system/pioneer_robot.service
 ```
@@ -232,14 +248,14 @@ RestartSec=2
 WantedBy=multi-user.target
 ```
 
-Enable + start:
+Enable:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable pioneer_robot.service
 sudo systemctl start pioneer_robot.service
 ```
 
-Status/logs:
+Check:
 ```bash
 systemctl status pioneer_robot.service --no-pager
 journalctl -u pioneer_robot.service -n 120 --no-pager -l
@@ -247,10 +263,9 @@ journalctl -u pioneer_robot.service -n 120 --no-pager -l
 
 ---
 
-# Part E — Laptop operator workflow (Dashboard)
+# 8) Laptop operator workflow (dashboard)
 
-## E1. Confirm robot topics exist (laptop)
-
+## 8.1 Verify robot topics are visible (laptop)
 ```bash
 source /opt/ros/jazzy/setup.bash
 export ROS_DOMAIN_ID=7
@@ -265,31 +280,33 @@ ros2 topic list | egrep "(/scan|/oak/rgb/image_raw|/rear/image_raw)"
 ros2 topic hz /scan --window 50
 ```
 
-## E2. Run dashboard (laptop)
-
+## 8.2 Run the dashboard (laptop)
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
+
+# If you get a Qt platform plugin error (Wayland), force XCB:
 export QT_QPA_PLATFORM=xcb
+
 ros2 run pioneer_dashboard_app pioneer_dashboard_app
 ```
-
-Dashboard defaults (as shipped):
-- Front: `/oak/rgb/image_raw`
-- Rear: `/rear/image_raw`
-- Scan: `/scan`
-- cmd_vel: `/cmd_vel`
 
 Verify subscriptions:
 ```bash
 ros2 node info /pioneer_dashboard_app | sed -n '1,90p'
 ```
 
+Dashboard defaults:
+- Front: `/oak/rgb/image_raw`
+- Rear: `/rear/image_raw`
+- Scan: `/scan`
+- cmd_vel: `/cmd_vel`
+
 ---
 
-# Part F — Torch / Aux Trigger
+# 9) Torch / Aux trigger
 
-The base controller provides:
+Service provided by base controller:
 - `/pioneer_base/torch_pulse` (`std_srvs/Trigger`)
 
 Test from laptop:
@@ -300,10 +317,9 @@ ros2 service call /pioneer_base/torch_pulse std_srvs/srv/Trigger "{}"
 
 ---
 
-# Part G — Laptop‑first Git workflow
+# 10) Laptop-first Git workflow (recommended)
 
-## G1. Edit on laptop → push
-
+## 10.1 Edit on laptop → push
 ```bash
 cd ~/ros2_ws/src/pioneer3
 git status
@@ -312,8 +328,7 @@ git commit -m "Describe your change"
 git push
 ```
 
-## G2. Robot pulls + rebuild + restart service
-
+## 10.2 Robot pulls + rebuild + restart service
 ```bash
 ssh -t easel@<ROBOT_IP> '
   source /opt/ros/jazzy/setup.bash &&
@@ -327,38 +342,36 @@ ssh -t easel@<ROBOT_IP> '
 
 ---
 
-# Part H — Troubleshooting (field‑focused)
+# 11) Troubleshooting (field-focused)
 
-## H1. Dashboard shows cameras but no LiDAR
-1) Ensure `/scan` is publishing:
+## 11.1 “Dashboard works but no LiDAR in the widget”
+1) Confirm `/scan` is publishing (laptop):
 ```bash
 ros2 topic hz /scan --window 50
 ```
-2) Ensure dashboard subscribes:
+2) Confirm dashboard subscribes:
 ```bash
 ros2 node info /pioneer_dashboard_app | sed -n '1,120p'
 ```
-3) Ensure QoS matches (dashboard subscriber should be RELIABLE):
+3) Confirm QoS match:
 ```bash
 ros2 topic info /scan -v | head -n 90
 ```
 
-## H2. LiDAR timeouts / intermittent `/scan`
-Common Ubuntu fix on robot:
+## 11.2 LiDAR timeout / intermittent scan (SL_RESULT_OPERATION_TIMEOUT)
+A very common cause on Ubuntu is **ModemManager** grabbing `/dev/ttyUSB0`.
+On robot:
 ```bash
 sudo systemctl stop ModemManager || true
 sudo systemctl disable ModemManager || true
 sudo systemctl restart pioneer_robot.service
 ```
-Then re‑check:
+Then verify:
 ```bash
 ros2 topic hz /scan --window 50
 ```
 
-## H3. Duplicate node name warnings
-If you see warnings about nodes sharing the same name, ensure you didn’t launch multiple bringups (service + manual) at the same time.
-
-## H4. Rear camera not publishing
+## 11.3 Rear camera missing
 Robot:
 ```bash
 v4l2-ctl --list-devices
@@ -369,27 +382,133 @@ Laptop:
 ros2 topic list | grep rear
 ```
 
-## H5. Qt platform plugin (Wayland) errors
-Force XCB:
+## 11.4 Duplicate node-name warnings
+Ensure you do not run multiple bringups (service + manual) at the same time.
+
+---
+
+# 12) Next milestone: Joystick control
+
+Next development: joystick/gamepad control integrated into the dashboard workflow.
+---
+
+# Appendix 2 — ARIA install paths (choose one)
+
+There are two common ways ARIA shows up on a Pioneer system. Use **one**.
+
+## A2.1 Option A: “System ARIA” already installed (common in labs)
+This project expects ARIA to resolve to:
+
+- Header: `/usr/local/Aria/include/Aria.h`
+- Library: `/usr/local/Aria/lib/libAria.so` (or similar)
+
+Verify:
 ```bash
-export QT_QPA_PLATFORM=xcb
+ls -l /usr/local/Aria/include/Aria.h
+ls -l /usr/local/Aria/lib | grep -i aria
+```
+If these exist, you can build the workspace as-is.
+
+## A2.2 Option B: Build ARIA/AriaCoda from source
+Some environments use the AriaCoda distribution (or equivalent). A typical pattern is:
+
+```bash
+cd ~
+git clone <YOUR_LAB_ARIA_REPO_OR_VENDOR_URL> AriaCoda
+cd AriaCoda
+make -j"$(nproc)"
+sudo make install
+sudo ldconfig
+```
+Then verify the same expected paths (`/usr/local/Aria/...`) exist.
+
+> **Note**: Different lab distributions may install under `/usr/local/include/Aria` and `/usr/local/lib`.
+> If so, update your CMake include/link paths accordingly (or add symlinks).
+
+---
+
+# Appendix 3 — Known-good topic names and QoS (quick checklist)
+
+When the robot stack is healthy, you should see these topics from the laptop:
+
+## A3.1 Required topics (names)
+- LiDAR scan: `/scan` (`sensor_msgs/msg/LaserScan`)
+- Front RGB: `/oak/rgb/image_raw` (`sensor_msgs/msg/Image`)
+- Rear RGB: `/rear/image_raw` (`sensor_msgs/msg/Image`)
+- Velocity command: `/cmd_vel` (`geometry_msgs/msg/Twist`)
+- Torch service: `/pioneer_base/torch_pulse` (`std_srvs/srv/Trigger`)
+
+List + types:
+```bash
+ros2 topic list -t | egrep "(/scan|/oak/rgb/image_raw|/rear/image_raw|/cmd_vel)"
+ros2 service list | egrep "(torch_pulse)"
+```
+
+## A3.2 QoS expectations (important)
+- `/scan` publisher: **RELIABLE**
+- Dashboard subscriber to `/scan`: **RELIABLE**
+- Image topics may be RELIABLE or BEST_EFFORT depending on driver; the dashboard is designed to work with both.
+
+Check `/scan` QoS:
+```bash
+ros2 topic info /scan -v | head -n 90
+```
+You want to see:
+- Publisher `sllidar_node` reliability = RELIABLE
+- Subscriber `pioneer_dashboard_app` reliability = RELIABLE
+
+## A3.3 Health check commands (fast)
+```bash
+ros2 topic hz /scan --window 50
+ros2 node info /pioneer_dashboard_app | sed -n '1,90p'
 ```
 
 ---
 
-# Appendix 1 — Optional RViz Panel Plugin
+# Appendix 4 — Day-of-experiment quick start (minimal steps)
 
-An optional RViz2 plugin panel exists: `pioneer_dashboard_rviz::DashboardPanel`.
+This is the “don’t think, just run” checklist.
 
-Notes:
-- Build plugins on the same machine that runs RViz.
-- Match RViz Qt version (Qt5 vs Qt6). Check:
-  ```bash
-  ldd $(which rviz2) | grep -E "Qt5|Qt6" | head -n 20
-  ```
+## A4.1 Robot (power-on)
+1. Power on the Pioneer 3-DX.
+2. Wait ~1–2 minutes for Linux + `systemd` bringup to complete.
+3. (Optional) Confirm bringup is running:
+```bash
+ssh -t easel@<ROBOT_IP> 'systemctl status pioneer_robot.service --no-pager'
+```
+
+## A4.2 Laptop (operator)
+Open a terminal on the same network and run:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=7
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+unset ROS_LOCALHOST_ONLY
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+ros2 daemon stop
+ros2 daemon start
+
+# Verify the 3 key feeds
+ros2 topic list | egrep "(/scan|/oak/rgb/image_raw|/rear/image_raw)"
+ros2 topic hz /scan --window 50
+```
+
+If the three topics exist and `/scan` shows a stable Hz, run the dashboard:
+
+```bash
+source ~/ros2_ws/install/setup.bash
+export QT_QPA_PLATFORM=xcb
+ros2 run pioneer_dashboard_app pioneer_dashboard_app
+```
+
+## A4.3 If something is missing
+- If `/scan` is missing or unstable: reboot robot or disable ModemManager (Troubleshooting §11.2)
+- If cameras are missing: replug USB cameras and restart `pioneer_robot.service`
+
+Restart service (robot):
+```bash
+ssh -t easel@<ROBOT_IP> 'sudo systemctl restart pioneer_robot.service'
+```
 
 ---
-
-# Next milestone: Joystick control
-
-Next development item is joystick/gamepad control integration into the dashboard workflow.

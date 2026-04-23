@@ -31,11 +31,22 @@ def generate_launch_description():
 
 
     # Front camera (OAK) via launch include
-    depthai_share = get_package_share_directory('depthai_ros_driver')
-    depthai_launch_path = os.path.join(depthai_share, 'launch', 'camera.launch.py')
+    # depthai_share = get_package_share_directory('depthai_ros_driver')
+    # depthai_launch_path = os.path.join(depthai_share, 'launch', 'camera.launch.py')
+    # oak_launch = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(depthai_launch_path),
+    #     condition=IfCondition(use_oak),
+    # )
+    pioneer3_share = get_package_share_directory('pioneer3')
+    oak_params = os.path.join(pioneer3_share, 'config', 'oak_rgb_only.yaml')
+
     oak_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(depthai_launch_path),
         condition=IfCondition(use_oak),
+        launch_arguments={
+            'params_file': oak_params,
+            'namespace': 'oak',   # keeps /oak/... topic names
+        }.items()
     )
 
     # Rear camera (USB webcam) via v4l2_camera node

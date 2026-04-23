@@ -1,0 +1,18 @@
+/oak:
+  ros__parameters:
+    camera:
+      # BIG wins:
+      i_pipeline_type: RGB       # (not RGBD)
+      i_nn_type: none            # disables NN
+      i_enable_imu: false
+      i_enable_ir: false
+
+    rgb:
+      # latency / CPU tuning:
+      i_fps: 15.0                # try 10–20
+      i_max_q_size: 1            # drop frames, don't queue
+      i_width: 1280
+      i_height: 720
+      i_resolution: "720"        # or "1080" if you want
+      i_interleaved: false
+      i_publish_topic: true

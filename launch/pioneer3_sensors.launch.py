@@ -42,7 +42,7 @@ def generate_launch_description():
         condition=IfCondition(use_oak),
         launch_arguments={
             'params_file': oak_params,
-            'namespace': 'oak',   # keeps /oak/... topic names
+            # 'namespace': 'oak',   # keeps /oak/... topic names
         }.items()
     )
 

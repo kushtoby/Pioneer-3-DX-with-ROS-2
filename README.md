@@ -194,6 +194,34 @@ source ~/ros2_ws/install/setup.bash
 ros2 launch pioneer3 pioneer3_robot.launch.py
 ```
 
+## 6.1 Front camera low-latency option (recommended for live operation)
+
+By default the OAK driver publishes **raw** and **compressed** streams. Over the network, the **compressed** stream is usually smoother.
+
+### Option A (simplest): use the compressed topic in the dashboard
+Set the dashboard front topic to:
+- `/oak/rgb/image_raw/compressed`
+
+### Option B (best compromise): republish compressed → raw on a local “_local” topic
+This keeps the dashboard code path as `sensor_msgs/Image`, but uses the compressed feed under the hood.
+
+Run on the **robot** (or as part of your bringup):
+```bash
+# Creates: /oak/rgb/image_raw_local (sensor_msgs/Image)
+# Subscribes from: /oak/rgb/image_raw/compressed
+ros2 run image_transport republish   --ros-args   -p in_transport:=compressed   -p out_transport:=raw   --remap in:=/oak/rgb/image_raw   --remap out:=/oak/rgb/image_raw_local   -r __node:=oak_image_republisher
+```
+
+Then set the dashboard front topic to:
+- `/oak/rgb/image_raw_local`
+
+**Important:** don’t run multiple republishers at once. If you see duplicate node-name warnings for `/image_republisher`, stop them and restart the robot bringup:
+```bash
+pkill -f "image_transport republish" || true
+pkill -f oak_image_republisher || true
+sudo systemctl restart pioneer_robot.service
+```
+
 ---
 
 # 7) Auto-start on boot (robot)
@@ -297,7 +325,9 @@ ros2 node info /pioneer_dashboard_app | sed -n '1,90p'
 ```
 
 Dashboard defaults:
-- Front: `/oak/rgb/image_raw`
+- Front: `/oak/rgb/image_raw/compressed`  *(recommended)*
+  - Alternative: `/oak/rgb/image_raw_local` (if using §6.1 Option B)
+  - Alternative: `/oak/rgb/image_raw` (raw)
 - Rear: `/rear/image_raw`
 - Scan: `/scan`
 - cmd_vel: `/cmd_vel`
@@ -384,6 +414,22 @@ ros2 topic list | grep rear
 
 ## 11.4 Duplicate node-name warnings
 Ensure you do not run multiple bringups (service + manual) at the same time.
+
+## 11.5 Front camera “lags” but topics look healthy
+This usually means you’re viewing **raw** frames over the network, or the OAK pipeline is doing extra work.
+
+1) Check the compressed rate (laptop):
+```bash
+timeout 8 ros2 topic hz /oak/rgb/image_raw/compressed --window 50
+```
+
+2) Prefer the compressed workflow:
+- Use `/oak/rgb/image_raw/compressed` directly in the dashboard **or**
+- Use §6.1 Option B to republish compressed → `/oak/rgb/image_raw_local`
+
+3) If you still need more headroom:
+- Reduce OAK resolution / FPS in `config/oak_rgb_only.yaml`
+- Keep the dashboard “latest-only” buffering + render tick enabled (drops old frames instead of building latency)
 
 ---
 

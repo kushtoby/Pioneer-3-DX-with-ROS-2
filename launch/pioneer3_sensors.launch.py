@@ -1,4 +1,4 @@
-from launch import LaunchDescription
+from launch import LaunchDescription, ExecuteProcess
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -46,6 +46,19 @@ def generate_launch_description():
         }.items()
     )
 
+    republish_oak = ExecuteProcess(
+        condition=IfCondition(use_oak),
+        cmd=[
+            'ros2', 'run', 'image_transport', 'republish',
+            '--ros-args',
+            '-p', 'in_transport:=compressed',
+            '-p', 'out_transport:=raw',
+            '--remap', 'in:=/oak/rgb/image_raw',
+            '--remap', 'out:=/oak/rgb/image_raw_local',
+        ],
+        output='screen'
+    )
+
     # Rear camera (USB webcam) via v4l2_camera node
     rear_cam = Node(
         package='v4l2_camera',
@@ -67,4 +80,5 @@ def generate_launch_description():
     return LaunchDescription(declare + [
         oak_launch,
         rear_cam,
+        republish_oak,
     ])

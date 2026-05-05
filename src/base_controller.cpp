@@ -133,6 +133,12 @@ private:
 
     // Fire 3 pulses 400ms apart to cycle Low -> Strobe -> Off
     // Each pulse: pin high for torch_pulse_ms_, then low, then wait 400ms
+
+    // Cancel any pending off timer from a previous torch_pulse call
+    if (torch_off_timer_) {
+      torch_off_timer_->cancel();
+      torch_off_timer_.reset();
+    }
     for (int i = 0; i < 3; ++i) {
       const int pin = torch_od_pin_;
       const int bit = (1 << pin);

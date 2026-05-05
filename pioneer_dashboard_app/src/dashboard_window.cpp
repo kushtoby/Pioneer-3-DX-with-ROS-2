@@ -156,29 +156,25 @@ void DashboardWindow::setupUi() {
   connect(stop_, &QPushButton::clicked,  this, &DashboardWindow::onStopClicked);
 
   connect(torch_btn_, &QPushButton::clicked, this, [this]() {
-    if (!torch_is_on_) {
-      // Turn on: single pulse
-      if (!torch_client_ || !torch_client_->service_is_ready()) {
-        RCLCPP_WARN(node_->get_logger(), "torch_pulse service not ready");
-        return;
+      RCLCPP_INFO(node_->get_logger(), "torch button clicked, torch_is_on_=%d, client=%p",
+                  (int)torch_is_on_, (void*)torch_client_.get());
+      if (!torch_is_on_) {
+        if (!torch_client_) return;
+        torch_client_->async_send_request(
+          std::make_shared<std_srvs::srv::Trigger::Request>());
+        torch_is_on_ = true;
+        torch_btn_->setText("TORCH OFF");
+        torch_btn_->setStyleSheet("QPushButton { background-color: #c0392b; color: white; font-weight: bold; }");
+      } else {
+        RCLCPP_INFO(node_->get_logger(), "sending off sequence, torch_off_client_=%p",
+                    (void*)torch_off_client_.get());
+        if (!torch_off_client_) return;
+        torch_off_client_->async_send_request(
+          std::make_shared<std_srvs::srv::Trigger::Request>());
+        torch_is_on_ = false;
+        torch_btn_->setText("TORCH ON");
+        torch_btn_->setStyleSheet("QPushButton { background-color: #27ae60; color: white; font-weight: bold; }");
       }
-      torch_client_->async_send_request(
-        std::make_shared<std_srvs::srv::Trigger::Request>());
-      torch_is_on_ = true;
-      torch_btn_->setText("TORCH OFF");
-      torch_btn_->setStyleSheet("QPushButton { background-color: #c0392b; color: white; font-weight: bold; }");
-    } else {
-      // Turn off: 3-pulse sequence
-      if (!torch_off_client_ || !torch_off_client_->service_is_ready()) {
-        RCLCPP_WARN(node_->get_logger(), "torch_off service not ready");
-        return;
-      }
-      torch_off_client_->async_send_request(
-        std::make_shared<std_srvs::srv::Trigger::Request>());
-      torch_is_on_ = false;
-      torch_btn_->setText("TORCH ON");
-      torch_btn_->setStyleSheet("QPushButton { background-color: #27ae60; color: white; font-weight: bold; }");
-    }
   });
 
   leftCol->addWidget(teleBox);

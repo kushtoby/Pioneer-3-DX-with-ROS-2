@@ -85,6 +85,7 @@ private:
       robot_->lock();
       robot_->comInt(ArCommands::DIGOUT, digout_mask_);
       robot_->unlock();
+      RCLCPP_INFO(this->get_logger(), "DIGOUT sent: mask=0x%02x pin=%d", digout_mask_, pin);
     }
 
     // Cancel any pending OFF timer and schedule a new one-shot OFF
@@ -94,28 +95,26 @@ private:
     }
 
     torch_off_timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(ms),
-      [this, bit]()
-      {
-        if (!robot_ || !robot_->isConnected()) {
-          // best effort cleanup
-          std::lock_guard<std::mutex> g(digout_mtx_);
-          digout_mask_ &= ~bit;
-          return;
-        }
+          std::chrono::milliseconds(ms),
+          [this, bit]()
+          {
+            // Cancel first to prevent repeat firing
+            torch_off_timer_->cancel();
 
-        std::lock_guard<std::mutex> g(digout_mtx_);
-        digout_mask_ &= ~bit;
+            if (!robot_ || !robot_->isConnected()) {
+              std::lock_guard<std::mutex> g(digout_mtx_);
+              digout_mask_ &= ~bit;
+              return;
+            }
 
-        robot_->lock();
-        robot_->comInt(ArCommands::DIGOUT, digout_mask_);
-        robot_->unlock();
+            std::lock_guard<std::mutex> g(digout_mtx_);
+            digout_mask_ &= ~bit;
 
-        // one-shot timer cleanup
-        torch_off_timer_->cancel();
-        torch_off_timer_.reset();
-      }
-    );
+            robot_->lock();
+            robot_->comInt(ArCommands::DIGOUT, digout_mask_);
+            robot_->unlock();
+          }
+        );
 
     res->success = true;
     res->message = "Torch pulse scheduled";

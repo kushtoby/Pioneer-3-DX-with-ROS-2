@@ -133,6 +133,8 @@ void DashboardWindow::setupUi() {
   stop_->setStyleSheet("QPushButton{font-weight:bold;}");
 
   torch_btn_ = new QPushButton("TORCH");
+  torch_btn_->setStyleSheet("QPushButton { background-color: #27ae60; color: white; font-weight: bold; }");
+  torch_btn_->setText("TORCH ON");
   torch_btn_->setToolTip("Pulse OD6 relay (~200 ms) to toggle the torch");
   tv->addWidget(torch_btn_);
 
@@ -153,17 +155,30 @@ void DashboardWindow::setupUi() {
   connect(right_,&QPushButton::released, this, &DashboardWindow::onRightReleased);
   connect(stop_, &QPushButton::clicked,  this, &DashboardWindow::onStopClicked);
 
-  connect(torch_btn_, &QPushButton::clicked, this, [this](){
-    if (!torch_client_) return;
-
-    if (!torch_client_->service_is_ready()) {
-      // Optional: print warning
-      RCLCPP_WARN(node_->get_logger(), "Torch service not available: /pioneer_base/torch_pulse");
-      return;
+  connect(torch_btn_, &QPushButton::clicked, this, [this]() {
+    if (!torch_is_on_) {
+      // Turn on: single pulse
+      if (!torch_client_ || !torch_client_->service_is_ready()) {
+        RCLCPP_WARN(node_->get_logger(), "torch_pulse service not ready");
+        return;
+      }
+      torch_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>());
+      torch_is_on_ = true;
+      torch_btn_->setText("TORCH OFF");
+      torch_btn_->setStyleSheet("QPushButton { background-color: #c0392b; color: white; font-weight: bold; }");
+    } else {
+      // Turn off: 3-pulse sequence
+      if (!torch_off_client_ || !torch_off_client_->service_is_ready()) {
+        RCLCPP_WARN(node_->get_logger(), "torch_off service not ready");
+        return;
+      }
+      torch_off_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>());
+      torch_is_on_ = false;
+      torch_btn_->setText("TORCH ON");
+      torch_btn_->setStyleSheet("QPushButton { background-color: #27ae60; color: white; font-weight: bold; }");
     }
-
-    auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
-    torch_client_->async_send_request(req);
   });
 
   leftCol->addWidget(teleBox);
@@ -261,6 +276,7 @@ void DashboardWindow::onApplyTopics() {
   cmd_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>(cmdvel_topic_->text().toStdString(), rclcpp::QoS(10));
 
   torch_client_ = node_->create_client<std_srvs::srv::Trigger>("/pioneer_base/torch_pulse");
+  torch_off_client_ = node_->create_client<std_srvs::srv::Trigger>("/pioneer_base/torch_off");
 
   auto image_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
   auto sensor_qos = rclcpp::SensorDataQoS();

@@ -78,6 +78,8 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rear_sub_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr torch_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr torch_off_client_;
+  bool torch_is_on_{false};
   
 
   // UI

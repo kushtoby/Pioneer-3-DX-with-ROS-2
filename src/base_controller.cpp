@@ -6,6 +6,7 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <mutex>
 #include <chrono>
+#include <thread>
 
 #include <cmath>
 
@@ -28,6 +29,11 @@ public:
     torch_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "~/torch_pulse",
       std::bind(&PioneerBaseNode::torchPulseCb, this,
+                std::placeholders::_1, std::placeholders::_2));
+
+    torch_off_srv_ = this->create_service<std_srvs::srv::Trigger>(
+      "~/torch_off",
+      std::bind(&PioneerBaseNode::torchOffCb, this,
                 std::placeholders::_1, std::placeholders::_2));
   }
 
@@ -115,9 +121,56 @@ private:
     res->message = "Torch pulse scheduled";
   }
 
+  void torchOffCb(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (!robot_ || !robot_->isConnected()) {
+      res->success = false;
+      res->message = "Robot not connected";
+      return;
+    }
+
+    // Fire 3 pulses 400ms apart to cycle Low -> Strobe -> Off
+    // Each pulse: pin high for torch_pulse_ms_, then low, then wait 400ms
+    for (int i = 0; i < 3; ++i) {
+      const int pin = torch_od_pin_;
+      const int bit = (1 << pin);
+
+      {
+        std::lock_guard<std::mutex> g(digout_mtx_);
+        digout_mask_ |= bit;
+        robot_->lock();
+        robot_->comInt(ArCommands::DIGOUT, digout_mask_);
+        robot_->unlock();
+      }
+
+      // Hold for pulse duration
+      std::this_thread::sleep_for(std::chrono::milliseconds(torch_pulse_ms_));
+
+      {
+        std::lock_guard<std::mutex> g(digout_mtx_);
+        digout_mask_ &= ~bit;
+        robot_->lock();
+        robot_->comInt(ArCommands::DIGOUT, digout_mask_);
+        robot_->unlock();
+      }
+
+      // Wait between pulses (skip the wait after the last pulse)
+      if (i < 2) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+      }
+    }
+
+    res->success = true;
+    res->message = "Torch off sequence sent";
+  }
+
   ArRobot* robot_;
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
+
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr torch_off_srv_;
 
   // Torch service + state
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr torch_srv_;

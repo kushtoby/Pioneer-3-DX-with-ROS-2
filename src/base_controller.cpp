@@ -5,7 +5,12 @@
 
 #include <std_srvs/srv/trigger.hpp>
 #include <mutex>
+#include <thread>
 #include <chrono>
+#include <atomic>
+#include <condition_variable>
+#include <queue>
+#include <functional>
 
 #include <cmath>
 
@@ -13,7 +18,7 @@ class PioneerBaseNode : public rclcpp::Node
 {
 public:
   explicit PioneerBaseNode(ArRobot* robot)
-  : Node("pioneer_base"), robot_(robot)
+  : Node("pioneer_base"), robot_(robot), worker_stop_(false)
   {
     using std::placeholders::_1;
     using std::placeholders::_2;
@@ -23,8 +28,8 @@ public:
       std::bind(&PioneerBaseNode::cmdVelCallback, this, _1));
 
     torch_od_pin_   = this->declare_parameter<int>("torch_od_pin", 6);
-    torch_pulse_ms_ = this->declare_parameter<int>("torch_pulse_ms", 200);
-    torch_gap_ms_   = this->declare_parameter<int>("torch_gap_ms", 400);
+    torch_pulse_ms_ = this->declare_parameter<int>("torch_pulse_ms", 300);
+    torch_gap_ms_   = this->declare_parameter<int>("torch_gap_ms", 500);
 
     torch_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "~/torch_pulse",
@@ -33,27 +38,54 @@ public:
     torch_off_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "~/torch_off",
       std::bind(&PioneerBaseNode::torchOffCb, this, _1, _2));
+
+    // Start the dedicated worker thread
+    worker_thread_ = std::thread(&PioneerBaseNode::workerLoop, this);
+  }
+
+  ~PioneerBaseNode()
+  {
+    {
+      std::lock_guard<std::mutex> lk(queue_mtx_);
+      worker_stop_ = true;
+    }
+    queue_cv_.notify_one();
+    if (worker_thread_.joinable()) worker_thread_.join();
   }
 
 private:
   // ----------------------------------------------------------------
-  // cmd_vel
+  // Worker thread - runs independently of the ROS executor
   // ----------------------------------------------------------------
-  void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
+  void workerLoop()
   {
-    if (!robot_->isConnected()) {
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-        "Robot not connected; ignoring cmd_vel");
-      return;
+    while (true) {
+      std::function<void()> job;
+      {
+        std::unique_lock<std::mutex> lk(queue_mtx_);
+        queue_cv_.wait(lk, [this] {
+          return worker_stop_ || !job_queue_.empty();
+        });
+        if (worker_stop_ && job_queue_.empty()) break;
+        job = std::move(job_queue_.front());
+        job_queue_.pop();
+      }
+      job();
     }
-    robot_->lock();
-    robot_->setVel(msg->linear.x * 1000.0);           // m/s -> mm/s
-    robot_->setRotVel(msg->angular.z * 180.0 / M_PI); // rad/s -> deg/s
-    robot_->unlock();
+  }
+
+  void enqueueJob(std::function<void()> f)
+  {
+    {
+      std::lock_guard<std::mutex> lk(queue_mtx_);
+      while (!job_queue_.empty()) job_queue_.pop();
+      job_queue_.push(std::move(f));
+    }
+    queue_cv_.notify_one();
   }
 
   // ----------------------------------------------------------------
-  // Low-level DIGOUT helpers
+  // Raw DIGOUT helpers (called only from worker thread)
   // ----------------------------------------------------------------
   void pinHigh(int bit)
   {
@@ -76,33 +108,23 @@ private:
   }
 
   // ----------------------------------------------------------------
-  // Cancel the active timer safely (never from inside the callback)
+  // cmd_vel
   // ----------------------------------------------------------------
-  void cancelTimer()
+  void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
   {
-    if (active_timer_) {
-      active_timer_->cancel();
-      active_timer_.reset();
+    if (!robot_->isConnected()) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "Robot not connected; ignoring cmd_vel");
+      return;
     }
+    robot_->lock();
+    robot_->setVel(msg->linear.x * 1000.0);
+    robot_->setRotVel(msg->angular.z * 180.0 / M_PI);
+    robot_->unlock();
   }
 
   // ----------------------------------------------------------------
-  // Single-shot timer helper
-  // f is called once after delay_ms, then the timer cancels itself
-  // ----------------------------------------------------------------
-  void oneShotTimer(int delay_ms, std::function<void()> f)
-  {
-    active_timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(delay_ms),
-      [this, f]() {
-        active_timer_->cancel();  // cancel before running f so f can re-arm
-        f();
-      }
-    );
-  }
-
-  // ----------------------------------------------------------------
-  // torch_pulse: single button-press pulse (turns the light ON)
+  // torch_pulse: single pulse (turns light ON)
   // ----------------------------------------------------------------
   void torchPulseCb(
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
@@ -114,23 +136,21 @@ private:
       return;
     }
 
-    const int bit = (1 << torch_od_pin_);
+    const int bit      = (1 << torch_od_pin_);
     const int pulse_ms = torch_pulse_ms_;
 
-    cancelTimer();       // clear any pending pulse
-    pinHigh(bit);        // relay closes
-
-    oneShotTimer(pulse_ms, [this, bit]() {
-      pinLow(bit);       // relay opens after pulse_ms
+    enqueueJob([this, bit, pulse_ms]() {
+      pinHigh(bit);
+      std::this_thread::sleep_for(std::chrono::milliseconds(pulse_ms));
+      pinLow(bit);
     });
 
     res->success = true;
-    res->message = "Torch pulse scheduled";
+    res->message = "Torch pulse queued";
   }
 
   // ----------------------------------------------------------------
   // torch_off: 3 pulses to cycle Low -> Strobe -> Off
-  // Uses a recursive timer chain so the executor is never blocked
   // ----------------------------------------------------------------
   void torchOffCb(
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
@@ -142,35 +162,25 @@ private:
       return;
     }
 
-    cancelTimer();
-    fireOffPulse(0);
-
-    res->success = true;
-    res->message = "Torch off sequence started";
-  }
-
-  // Send pulse number `n` (0-based). After the pulse goes low,
-  // wait gap_ms then fire pulse n+1, until all 3 are done.
-  void fireOffPulse(int n)
-  {
-    if (n >= 3) return;   // all done
-
-    const int bit = (1 << torch_od_pin_);
+    const int bit      = (1 << torch_od_pin_);
     const int pulse_ms = torch_pulse_ms_;
     const int gap_ms   = torch_gap_ms_;
 
-    RCLCPP_INFO(this->get_logger(), "torch_off pulse %d / 3", n + 1);
-    pinHigh(bit);
-
-    oneShotTimer(pulse_ms, [this, bit, n, gap_ms]() {
-      pinLow(bit);
-      if (n + 1 < 3) {
-        // wait gap then fire next pulse
-        oneShotTimer(gap_ms, [this, n]() {
-          fireOffPulse(n + 1);
-        });
+    enqueueJob([this, bit, pulse_ms, gap_ms]() {
+      for (int i = 0; i < 3; ++i) {
+        RCLCPP_INFO(this->get_logger(), "torch_off pulse %d/3", i + 1);
+        pinHigh(bit);
+        std::this_thread::sleep_for(std::chrono::milliseconds(pulse_ms));
+        pinLow(bit);
+        if (i < 2) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(gap_ms));
+        }
       }
+      RCLCPP_INFO(this->get_logger(), "torch_off sequence complete");
     });
+
+    res->success = true;
+    res->message = "Torch off sequence queued";
   }
 
   // ----------------------------------------------------------------
@@ -179,18 +189,21 @@ private:
   ArRobot* robot_;
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr torch_srv_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr torch_off_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr         torch_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr         torch_off_srv_;
 
   int torch_od_pin_{6};
-  int torch_pulse_ms_{200};
-  int torch_gap_ms_{400};
+  int torch_pulse_ms_{300};
+  int torch_gap_ms_{500};
 
   int digout_mask_{0};
   std::mutex digout_mtx_;
 
-  // Single shared timer slot - only one timer active at a time
-  rclcpp::TimerBase::SharedPtr active_timer_;
+  std::thread                        worker_thread_;
+  std::mutex                         queue_mtx_;
+  std::condition_variable            queue_cv_;
+  std::queue<std::function<void()>>  job_queue_;
+  bool                               worker_stop_;
 };
 
 // ----------------------------------------------------------------
@@ -213,8 +226,8 @@ int main(int argc, char** argv)
 
   robot.lock();
   robot.enableMotors();
-  robot.setTransVelMax(300.0);  // mm/s
-  robot.setRotVelMax(40.0);     // deg/s
+  robot.setTransVelMax(300.0);
+  robot.setRotVelMax(40.0);
   robot.unlock();
 
   robot.runAsync(true);

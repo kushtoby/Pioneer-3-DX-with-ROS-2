@@ -6,7 +6,6 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <mutex>
 #include <chrono>
-#include <thread>
 
 #include <cmath>
 
@@ -17,45 +16,94 @@ public:
   : Node("pioneer_base"), robot_(robot)
   {
     using std::placeholders::_1;
+    using std::placeholders::_2;
+
     cmd_sub_ = this->create_subscription<geometry_msgs::msg::Twist>(
       "cmd_vel", 10,
       std::bind(&PioneerBaseNode::cmdVelCallback, this, _1));
 
-    // Torch parameters (optional)
     torch_od_pin_   = this->declare_parameter<int>("torch_od_pin", 6);
     torch_pulse_ms_ = this->declare_parameter<int>("torch_pulse_ms", 200);
+    torch_gap_ms_   = this->declare_parameter<int>("torch_gap_ms", 400);
 
-    // Torch service: /pioneer_base/torch_pulse
     torch_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "~/torch_pulse",
-      std::bind(&PioneerBaseNode::torchPulseCb, this,
-                std::placeholders::_1, std::placeholders::_2));
+      std::bind(&PioneerBaseNode::torchPulseCb, this, _1, _2));
 
     torch_off_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "~/torch_off",
-      std::bind(&PioneerBaseNode::torchOffCb, this,
-                std::placeholders::_1, std::placeholders::_2));
+      std::bind(&PioneerBaseNode::torchOffCb, this, _1, _2));
   }
 
 private:
+  // ----------------------------------------------------------------
+  // cmd_vel
+  // ----------------------------------------------------------------
   void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg)
   {
     if (!robot_->isConnected()) {
-      RCLCPP_WARN_THROTTLE(
-        this->get_logger(), *this->get_clock(), 2000,
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
         "Robot not connected; ignoring cmd_vel");
       return;
     }
-
-    double v_lin = msg->linear.x * 1000.0; // m/s -> mm/s
-    double v_rot = msg->angular.z * 180.0 / M_PI; // rad/s -> deg/s
-
     robot_->lock();
-    robot_->setVel(v_lin);
-    robot_->setRotVel(v_rot);
+    robot_->setVel(msg->linear.x * 1000.0);           // m/s -> mm/s
+    robot_->setRotVel(msg->angular.z * 180.0 / M_PI); // rad/s -> deg/s
     robot_->unlock();
   }
 
+  // ----------------------------------------------------------------
+  // Low-level DIGOUT helpers
+  // ----------------------------------------------------------------
+  void pinHigh(int bit)
+  {
+    std::lock_guard<std::mutex> g(digout_mtx_);
+    digout_mask_ |= bit;
+    robot_->lock();
+    robot_->comInt(ArCommands::DIGOUT, digout_mask_);
+    robot_->unlock();
+    RCLCPP_INFO(this->get_logger(), "DIGOUT HIGH mask=0x%02x", digout_mask_);
+  }
+
+  void pinLow(int bit)
+  {
+    std::lock_guard<std::mutex> g(digout_mtx_);
+    digout_mask_ &= ~bit;
+    robot_->lock();
+    robot_->comInt(ArCommands::DIGOUT, digout_mask_);
+    robot_->unlock();
+    RCLCPP_INFO(this->get_logger(), "DIGOUT LOW  mask=0x%02x", digout_mask_);
+  }
+
+  // ----------------------------------------------------------------
+  // Cancel the active timer safely (never from inside the callback)
+  // ----------------------------------------------------------------
+  void cancelTimer()
+  {
+    if (active_timer_) {
+      active_timer_->cancel();
+      active_timer_.reset();
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Single-shot timer helper
+  // f is called once after delay_ms, then the timer cancels itself
+  // ----------------------------------------------------------------
+  void oneShotTimer(int delay_ms, std::function<void()> f)
+  {
+    active_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(delay_ms),
+      [this, f]() {
+        active_timer_->cancel();  // cancel before running f so f can re-arm
+        f();
+      }
+    );
+  }
+
+  // ----------------------------------------------------------------
+  // torch_pulse: single button-press pulse (turns the light ON)
+  // ----------------------------------------------------------------
   void torchPulseCb(
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
@@ -66,60 +114,24 @@ private:
       return;
     }
 
-    const int pin = torch_od_pin_;
-    const int ms  = torch_pulse_ms_;
+    const int bit = (1 << torch_od_pin_);
+    const int pulse_ms = torch_pulse_ms_;
 
-    if (pin < 0 || pin > 30) {
-      res->success = false;
-      res->message = "Invalid torch_od_pin (expected 0..30)";
-      return;
-    }
+    cancelTimer();       // clear any pending pulse
+    pinHigh(bit);        // relay closes
 
-    const int bit = (1 << pin);
-
-    // Turn ON (preserve other digout bits)
-    {
-      std::lock_guard<std::mutex> g(digout_mtx_);
-      digout_mask_ |= bit;
-
-      robot_->lock();
-      robot_->comInt(ArCommands::DIGOUT, digout_mask_);
-      robot_->unlock();
-      RCLCPP_INFO(this->get_logger(), "DIGOUT sent: mask=0x%02x pin=%d", digout_mask_, pin);
-    }
-
-    // Cancel any pending OFF timer and schedule a new one-shot OFF
-    if (torch_off_timer_) {
-      torch_off_timer_->cancel();
-      torch_off_timer_.reset();
-    }
-
-    torch_off_timer_ = this->create_wall_timer(
-          std::chrono::milliseconds(ms),
-          [this, bit]()
-          {
-            // Cancel first to prevent repeat firing
-            torch_off_timer_->cancel();
-
-            if (!robot_ || !robot_->isConnected()) {
-              std::lock_guard<std::mutex> g(digout_mtx_);
-              digout_mask_ &= ~bit;
-              return;
-            }
-
-            std::lock_guard<std::mutex> g(digout_mtx_);
-            digout_mask_ &= ~bit;
-
-            robot_->lock();
-            robot_->comInt(ArCommands::DIGOUT, digout_mask_);
-            robot_->unlock();
-          }
-        );
+    oneShotTimer(pulse_ms, [this, bit]() {
+      pinLow(bit);       // relay opens after pulse_ms
+    });
 
     res->success = true;
     res->message = "Torch pulse scheduled";
   }
 
+  // ----------------------------------------------------------------
+  // torch_off: 3 pulses to cycle Low -> Strobe -> Off
+  // Uses a recursive timer chain so the executor is never blocked
+  // ----------------------------------------------------------------
   void torchOffCb(
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
@@ -130,66 +142,62 @@ private:
       return;
     }
 
-    // Fire 3 pulses 400ms apart to cycle Low -> Strobe -> Off
-    // Each pulse: pin high for torch_pulse_ms_, then low, then wait 400ms
-
-    // Cancel any pending off timer from a previous torch_pulse call
-    if (torch_off_timer_) {
-      torch_off_timer_->cancel();
-      torch_off_timer_.reset();
-    }
-    for (int i = 0; i < 3; ++i) {
-      const int pin = torch_od_pin_;
-      const int bit = (1 << pin);
-
-      {
-        std::lock_guard<std::mutex> g(digout_mtx_);
-        digout_mask_ |= bit;
-        robot_->lock();
-        robot_->comInt(ArCommands::DIGOUT, digout_mask_);
-        robot_->unlock();
-      }
-
-      // Hold for pulse duration
-      std::this_thread::sleep_for(std::chrono::milliseconds(torch_pulse_ms_));
-
-      {
-        std::lock_guard<std::mutex> g(digout_mtx_);
-        digout_mask_ &= ~bit;
-        robot_->lock();
-        robot_->comInt(ArCommands::DIGOUT, digout_mask_);
-        robot_->unlock();
-      }
-
-      // Wait between pulses (skip the wait after the last pulse)
-      if (i < 2) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(400));
-      }
-    }
+    cancelTimer();
+    fireOffPulse(0);
 
     res->success = true;
-    res->message = "Torch off sequence sent";
+    res->message = "Torch off sequence started";
   }
 
+  // Send pulse number `n` (0-based). After the pulse goes low,
+  // wait gap_ms then fire pulse n+1, until all 3 are done.
+  void fireOffPulse(int n)
+  {
+    if (n >= 3) return;   // all done
+
+    const int bit = (1 << torch_od_pin_);
+    const int pulse_ms = torch_pulse_ms_;
+    const int gap_ms   = torch_gap_ms_;
+
+    RCLCPP_INFO(this->get_logger(), "torch_off pulse %d / 3", n + 1);
+    pinHigh(bit);
+
+    oneShotTimer(pulse_ms, [this, bit, n, gap_ms]() {
+      pinLow(bit);
+      if (n + 1 < 3) {
+        // wait gap then fire next pulse
+        oneShotTimer(gap_ms, [this, n]() {
+          fireOffPulse(n + 1);
+        });
+      }
+    });
+  }
+
+  // ----------------------------------------------------------------
+  // Members
+  // ----------------------------------------------------------------
   ArRobot* robot_;
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub_;
-
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr torch_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr torch_off_srv_;
 
-  // Torch service + state
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr torch_srv_;
   int torch_od_pin_{6};
   int torch_pulse_ms_{200};
+  int torch_gap_ms_{400};
 
   int digout_mask_{0};
   std::mutex digout_mtx_;
-  rclcpp::TimerBase::SharedPtr torch_off_timer_;
+
+  // Single shared timer slot - only one timer active at a time
+  rclcpp::TimerBase::SharedPtr active_timer_;
 };
 
+// ----------------------------------------------------------------
+// main
+// ----------------------------------------------------------------
 int main(int argc, char** argv)
 {
-  // ARIA init and connect
   Aria::init();
 
   ArRobot robot;
@@ -197,29 +205,24 @@ int main(int argc, char** argv)
   parser.loadDefaultArguments();
 
   ArRobotConnector robotConnector(&parser, &robot);
-
   if (!robotConnector.connectRobot()) {
-    ArLog::log(ArLog::Terse, "Could not connect to the robot. Check -robotPort etc.");
+    ArLog::log(ArLog::Terse, "Could not connect to robot.");
     return 1;
   }
-
   ArLog::log(ArLog::Normal, "Connected to robot.");
 
-  // Enable motors and set some safe limits
   robot.lock();
   robot.enableMotors();
-  robot.setTransVelMax(300.0); // mm/s (0.3 m/s)
-  robot.setRotVelMax(40.0); // deg/s
+  robot.setTransVelMax(300.0);  // mm/s
+  robot.setRotVelMax(40.0);     // deg/s
   robot.unlock();
 
-  robot.runAsync(true); // start ARIA background loop
+  robot.runAsync(true);
 
-  // ROS2 init and spin
   rclcpp::init(argc, argv);
   auto node = std::make_shared<PioneerBaseNode>(&robot);
   rclcpp::spin(node);
 
-  // Cleanup
   robot.lock();
   robot.stop();
   robot.disableMotors();

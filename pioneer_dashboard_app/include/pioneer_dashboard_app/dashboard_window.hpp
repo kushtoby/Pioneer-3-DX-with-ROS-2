@@ -14,7 +14,6 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <geometry_msgs/msg/twist.hpp>
-
 #include <std_srvs/srv/trigger.hpp>
 
 #include "pioneer_dashboard_app/lidar_widget.hpp"
@@ -24,14 +23,11 @@ namespace pioneer_dashboard_app {
 class VideoCanvas : public QWidget {
   Q_OBJECT
 public:
-  explicit VideoCanvas(QWidget* parent=nullptr);
-
+  explicit VideoCanvas(QWidget* parent = nullptr);
   void setFrontFrame(const QImage& img);
   void setRearFrame(const QImage& img);
-
-  // PiP settings
   void setPipEnabled(bool en) { pip_enabled_ = en; update(); }
-  void setPipScale(float s) { pip_scale_ = s; update(); } // 0.1-0.5
+  void setPipScale(float s)   { pip_scale_ = s;    update(); }
 
 protected:
   void paintEvent(QPaintEvent* e) override;
@@ -39,8 +35,8 @@ protected:
 private:
   std::mutex m_;
   QImage front_, rear_;
-  bool pip_enabled_{true};
-  float pip_scale_{0.25f}; // PiP is 25% of width
+  bool  pip_enabled_{true};
+  float pip_scale_{0.25f};
 };
 
 class DashboardWindow : public QMainWindow {
@@ -51,6 +47,7 @@ public:
 private:
   void setupUi();
   void setupRos();
+  void setTorchButtonState(bool is_on);
 
   // ROS callbacks
   void frontImgCb(const sensor_msgs::msg::Image::SharedPtr msg);
@@ -65,45 +62,45 @@ private:
 private slots:
   void onApplyTopics();
   void onTeleopTick();
-  void onFwdPressed();  void onFwdReleased();
-  void onBackPressed(); void onBackReleased();
-  void onLeftPressed(); void onLeftReleased();
-  void onRightPressed();void onRightReleased();
+  void onFwdPressed();   void onFwdReleased();
+  void onBackPressed();  void onBackReleased();
+  void onLeftPressed();  void onLeftReleased();
+  void onRightPressed(); void onRightReleased();
   void onStopClicked();
 
 private:
   std::shared_ptr<rclcpp::Node> node_;
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr front_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rear_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr torch_client_;
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr torch_off_client_;
-  bool torch_is_on_{false};
-  
 
-  // UI
+  // ROS interfaces
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr    cmd_pub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr   front_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr   rear_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr          torch_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr          torch_off_client_;
+
+  bool torch_is_on_{false};
+
+  // UI widgets
   VideoCanvas* video_{nullptr};
   LidarWidget* lidar_{nullptr};
-
   QPushButton* torch_btn_{nullptr};
-  QLineEdit* front_topic_{nullptr};
-  QLineEdit* rear_topic_{nullptr};
-  QLineEdit* scan_topic_{nullptr};
-  QLineEdit* cmdvel_topic_{nullptr};
+  QLineEdit*   front_topic_{nullptr};
+  QLineEdit*   rear_topic_{nullptr};
+  QLineEdit*   scan_topic_{nullptr};
+  QLineEdit*   cmdvel_topic_{nullptr};
   QPushButton* apply_{nullptr};
-
-  QCheckBox* enable_teleop_{nullptr};
-  QSlider* lin_slider_{nullptr};
-  QSlider* ang_slider_{nullptr};
+  QCheckBox*   enable_teleop_{nullptr};
+  QSlider*     lin_slider_{nullptr};
+  QSlider*     ang_slider_{nullptr};
   QPushButton* fwd_{nullptr};
   QPushButton* back_{nullptr};
   QPushButton* left_{nullptr};
   QPushButton* right_{nullptr};
   QPushButton* stop_{nullptr};
 
-  QTimer teleop_timer_;
-  DriveCmd drive_{DriveCmd::STOP};
+  QTimer    teleop_timer_;
+  DriveCmd  drive_{DriveCmd::STOP};
 };
 
-} // namespace
+} // namespace pioneer_dashboard_app

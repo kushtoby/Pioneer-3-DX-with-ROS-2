@@ -91,21 +91,25 @@ private:
   {
     std::lock_guard<std::mutex> g(digout_mtx_);
     digout_mask_ |= bit;
+    // High byte = mask (which bits to touch), low byte = value (what to set them to)
+    int digout_arg = (bit << 8) | digout_mask_;
     robot_->lock();
-    robot_->comInt(ArCommands::DIGOUT, digout_mask_);
+    robot_->comInt(ArCommands::DIGOUT, digout_arg);
     robot_->unlock();
-    RCLCPP_INFO(this->get_logger(), "DIGOUT HIGH mask=0x%02x", digout_mask_);
+    RCLCPP_INFO(this->get_logger(), "DIGOUT HIGH arg=0x%04x mask=0x%02x", digout_arg, digout_mask_);
   }
 
   void pinLow(int bit)
   {
     std::lock_guard<std::mutex> g(digout_mtx_);
     digout_mask_ &= ~bit;
+    // High byte = mask (which bits to touch), low byte = value (0 to clear)
+    int digout_arg = (bit << 8) | digout_mask_;
     robot_->lock();
-    robot_->comInt(ArCommands::DIGOUT, digout_mask_);
+    robot_->comInt(ArCommands::DIGOUT, digout_arg);
     robot_->unlock();
-    RCLCPP_INFO(this->get_logger(), "DIGOUT LOW  mask=0x%02x", digout_mask_);
-  }
+    RCLCPP_INFO(this->get_logger(), "DIGOUT LOW  arg=0x%04x mask=0x%02x", digout_arg, digout_mask_);
+  }   
 
   // ----------------------------------------------------------------
   // cmd_vel

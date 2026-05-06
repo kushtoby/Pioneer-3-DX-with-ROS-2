@@ -9,9 +9,11 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <mutex>
+#include <atomic>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -51,6 +53,7 @@ private:
 
   // ROS callbacks
   void frontImgCb(const sensor_msgs::msg::Image::SharedPtr msg);
+  void frontCompCb(const sensor_msgs::msg::CompressedImage::SharedPtr msg);
   void rearImgCb(const sensor_msgs::msg::Image::SharedPtr msg);
   void scanCb(const sensor_msgs::msg::LaserScan::SharedPtr msg);
 
@@ -62,6 +65,7 @@ private:
 private slots:
   void onApplyTopics();
   void onTeleopTick();
+  void onRenderTick();
   void onFwdPressed();   void onFwdReleased();
   void onBackPressed();  void onBackReleased();
   void onLeftPressed();  void onLeftReleased();
@@ -72,14 +76,26 @@ private:
   std::shared_ptr<rclcpp::Node> node_;
 
   // ROS interfaces
-  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr    cmd_pub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr   front_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr   rear_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr          torch_client_;
-  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr          torch_off_client_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr              cmd_pub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr             front_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr   front_comp_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr             rear_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr         scan_sub_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                    torch_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                    torch_off_client_;
 
   bool torch_is_on_{false};
+
+  // Latest-only image/scan buffers (written by ROS thread, read by render timer)
+  std::mutex              img_mtx_;
+  QImage                  latest_front_;
+  QImage                  latest_rear_;
+  std::atomic<bool>       new_front_{false};
+  std::atomic<bool>       new_rear_{false};
+
+  std::mutex              scan_mtx_;
+  sensor_msgs::msg::LaserScan latest_scan_;
+  std::atomic<bool>       new_scan_{false};
 
   // UI widgets
   VideoCanvas* video_{nullptr};
@@ -99,8 +115,9 @@ private:
   QPushButton* right_{nullptr};
   QPushButton* stop_{nullptr};
 
-  QTimer    teleop_timer_;
-  DriveCmd  drive_{DriveCmd::STOP};
+  QTimer teleop_timer_;
+  QTimer render_timer_;
+  DriveCmd drive_{DriveCmd::STOP};
 };
 
 } // namespace pioneer_dashboard_app

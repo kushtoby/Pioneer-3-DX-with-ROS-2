@@ -358,12 +358,14 @@ ros2 node info /pioneer_dashboard_app | sed -n '1,90p'
 ```
 
 Dashboard defaults:
-- Front: `/oak/rgb/image_raw/compressed`  *(recommended)*
-  - Alternative: `/oak/rgb/image_raw_local` (if using §6.1 Option B)
-  - Alternative: `/oak/rgb/image_raw` (raw)
+- Front: `/oak/rgb/image_raw/compressed` *(default — low latency, decoded by Qt directly)*
+  - Alternative: `/oak/rgb/image_raw_local` (republished raw, also low latency)
+  - Alternative: `/oak/rgb/image_raw` (raw — avoid over network, causes lag)
 - Rear: `/rear/image_raw`
 - Scan: `/scan`
 - cmd_vel: `/cmd_vel`
+
+**Smart topic routing:** the dashboard automatically detects whether the front topic ends in `/compressed` and subscribes as `sensor_msgs/CompressedImage` or `sensor_msgs/Image` accordingly. You can switch between them at runtime by editing the Front image field and clicking Apply / Reconnect — no rebuild needed.
 
 ---
 
@@ -432,7 +434,7 @@ git push
 
 ## 10.2 Robot pulls + rebuild pioneer3 + restart service
 ```bash
-ssh -t easel@<ROBOT_IP> '
+ssh -t easel@192.168.1.31 '
   source /opt/ros/jazzy/setup.bash &&
   cd ~/ros2_ws/src/pioneer3 && git pull &&
   cd ~/ros2_ws &&
@@ -620,7 +622,7 @@ This is the "don't think, just run" checklist.
 3. Wait ~1–2 minutes for Linux + `systemd` bringup to complete.
 4. (Optional) Confirm bringup is running:
 ```bash
-ssh -t easel@<ROBOT_IP> 'systemctl status pioneer_robot.service --no-pager'
+ssh -t easel@192.168.1.31 'systemctl status pioneer_robot.service --no-pager'
 ```
 
 ## A4.2 Laptop (operator)
@@ -666,7 +668,37 @@ and repeat the test.
 
 Restart service (robot):
 ```bash
-ssh -t easel@<ROBOT_IP> 'sudo systemctl restart pioneer_robot.service'
+ssh -t easel@192.168.1.31 'sudo systemctl restart pioneer_robot.service'
 ```
 
 ---
+
+# Future Work
+
+## F1) Per-session LiDAR rosbag recording and automatic transfer to laptop
+
+**Goal:** automatically record `/scan` to a rosbag at the start of each experiment session and transfer the bag file to the operator laptop at the end of the session.
+
+**Planned approach:**
+
+Record on the robot using `ros2 bag record` as part of bringup or triggered manually:
+```bash
+# Record only the scan topic, timestamped by session
+ros2 bag record /scan -o ~/bags/session_$(date +%Y%m%d_%H%M%S)
+```
+
+Or integrate into the systemd bringup as a separate service that starts after `pioneer_robot.service`.
+
+At the end of the session, transfer the bag to the laptop over the local network:
+```bash
+# On laptop — pull latest bag from robot
+scp -r easel@192.168.1.31:~/bags/<session_name> ~/bags/
+```
+
+Or automate with `rsync` to sync all new bags:
+```bash
+rsync -avz easel@192.168.1.31:~/bags/ ~/bags/
+```
+
+**Longer term:** add a "Start Recording" / "Stop & Transfer" button to the dashboard that triggers bag recording via a ROS service and automatically rsync's the completed bag to the laptop when stopped.
+

@@ -85,7 +85,7 @@ void DashboardWindow::setupUi() {
   auto* topicsBox = new QGroupBox("Topics");
   auto* tg = new QGridLayout(topicsBox);
 
-  front_topic_  = new QLineEdit("/oak/rgb/image_raw");
+  front_topic_  = new QLineEdit("/oak/rgb/image_raw_local");
   rear_topic_   = new QLineEdit("/rear/image_raw");
   scan_topic_   = new QLineEdit("/scan");
   cmdvel_topic_ = new QLineEdit("/cmd_vel");

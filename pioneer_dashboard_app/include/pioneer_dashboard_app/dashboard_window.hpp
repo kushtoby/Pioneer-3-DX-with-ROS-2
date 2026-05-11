@@ -50,6 +50,7 @@ private:
   void setupUi();
   void setupRos();
   void setTorchButtonState(bool is_on);
+  void setRecordingState(bool is_recording);
 
   // ROS callbacks
   void frontImgCb(const sensor_msgs::msg::Image::SharedPtr msg);
@@ -83,10 +84,13 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr         scan_sub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                    torch_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                    torch_off_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                    rec_start_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                    rec_stop_client_;
 
   bool torch_is_on_{false};
+  bool recording_{false};
 
-  // Latest-only image/scan buffers (written by ROS thread, read by render timer)
+  // Latest-only image/scan buffers
   std::mutex              img_mtx_;
   QImage                  latest_front_;
   QImage                  latest_rear_;
@@ -101,6 +105,7 @@ private:
   VideoCanvas* video_{nullptr};
   LidarWidget* lidar_{nullptr};
   QPushButton* torch_btn_{nullptr};
+  QPushButton* rec_btn_{nullptr};
   QLineEdit*   front_topic_{nullptr};
   QLineEdit*   rear_topic_{nullptr};
   QLineEdit*   scan_topic_{nullptr};

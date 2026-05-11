@@ -67,10 +67,10 @@ DashboardWindow::DashboardWindow(std::shared_ptr<rclcpp::Node> node)
   setupUi();
   setupRos();
 
-  teleop_timer_.setInterval(50); // 20 Hz
+  teleop_timer_.setInterval(50);
   connect(&teleop_timer_, &QTimer::timeout, this, &DashboardWindow::onTeleopTick);
 
-  render_timer_.setInterval(33); // ~30 FPS
+  render_timer_.setInterval(33);
   connect(&render_timer_, &QTimer::timeout, this, &DashboardWindow::onRenderTick);
   render_timer_.start();
 }
@@ -81,7 +81,6 @@ void DashboardWindow::setupUi() {
 
   auto* root = new QHBoxLayout(central);
 
-  // ---- Left control column ----
   auto* leftCol = new QVBoxLayout();
   leftCol->setContentsMargins(0, 0, 0, 0);
 
@@ -89,7 +88,6 @@ void DashboardWindow::setupUi() {
   auto* topicsBox = new QGroupBox("Topics");
   auto* tg = new QGridLayout(topicsBox);
 
-  // Default to compressed for low latency over network
   front_topic_  = new QLineEdit("/oak/rgb/image_raw/compressed");
   rear_topic_   = new QLineEdit("/rear/image_raw");
   scan_topic_   = new QLineEdit("/scan");
@@ -152,6 +150,30 @@ void DashboardWindow::setupUi() {
     }
   });
 
+  // Recording button
+  rec_btn_ = new QPushButton("⏺  START TRIAL");
+  rec_btn_->setToolTip("Start/stop LiDAR rosbag recording and transfer to laptop");
+  setRecordingState(false);
+  tv->addWidget(rec_btn_);
+
+  connect(rec_btn_, &QPushButton::clicked, this, [this]() {
+    if (!recording_) {
+      if (!rec_start_client_) return;
+      RCLCPP_INFO(node_->get_logger(), "BAG: sending start_recording");
+      rec_start_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>());
+      recording_ = true;
+      setRecordingState(true);
+    } else {
+      if (!rec_stop_client_) return;
+      RCLCPP_INFO(node_->get_logger(), "BAG: sending stop_recording");
+      rec_stop_client_->async_send_request(
+        std::make_shared<std_srvs::srv::Trigger::Request>());
+      recording_ = false;
+      setRecordingState(false);
+    }
+  });
+
   // Drive buttons
   auto* bg = new QGridLayout();
   fwd_   = new QPushButton("▲");
@@ -189,7 +211,6 @@ void DashboardWindow::setupUi() {
 
   leftCol->addStretch(1);
 
-  // Right: big video canvas
   video_ = new VideoCanvas();
   root->addLayout(leftCol, 0);
   root->addWidget(video_, 1);
@@ -212,8 +233,20 @@ void DashboardWindow::setTorchButtonState(bool is_on) {
   }
 }
 
+void DashboardWindow::setRecordingState(bool is_recording) {
+  if (is_recording) {
+    rec_btn_->setText("⏹  STOP TRIAL");
+    rec_btn_->setStyleSheet(
+      "QPushButton { background-color: #c0392b; color: white; font-weight: bold; }");
+  } else {
+    rec_btn_->setText("⏺  START TRIAL");
+    rec_btn_->setStyleSheet(
+      "QPushButton { background-color: #2980b9; color: white; font-weight: bold; }");
+  }
+}
+
 void DashboardWindow::setupRos() {
-  // intentionally empty — onApplyTopics() handles everything
+  // intentionally empty
 }
 
 static QImage cvMatToQImageRGB(const cv::Mat& bgr) {
@@ -222,7 +255,6 @@ static QImage cvMatToQImageRGB(const cv::Mat& bgr) {
   return QImage(rgb.data, rgb.cols, rgb.rows, int(rgb.step), QImage::Format_RGB888).copy();
 }
 
-// --------- Front raw Image callback ----------
 void DashboardWindow::frontImgCb(const sensor_msgs::msg::Image::SharedPtr msg) {
   if (!msg) return;
   try {
@@ -232,10 +264,7 @@ void DashboardWindow::frontImgCb(const sensor_msgs::msg::Image::SharedPtr msg) {
     auto cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
     const QImage qimg = cvMatToQImageRGB(cv_ptr->image);
 
-    {
-      std::lock_guard<std::mutex> lk(img_mtx_);
-      latest_front_ = qimg;
-    }
+    { std::lock_guard<std::mutex> lk(img_mtx_); latest_front_ = qimg; }
     new_front_.store(true, std::memory_order_release);
 
   } catch (const std::exception& e) {
@@ -245,11 +274,9 @@ void DashboardWindow::frontImgCb(const sensor_msgs::msg::Image::SharedPtr msg) {
   }
 }
 
-// --------- Front compressed callback ----------
 void DashboardWindow::frontCompCb(const sensor_msgs::msg::CompressedImage::SharedPtr msg) {
   if (!msg || msg->data.empty()) return;
 
-  // Qt decodes JPEG/PNG directly — no OpenCV needed
   QImage img;
   img.loadFromData(msg->data.data(), static_cast<int>(msg->data.size()));
   if (img.isNull()) {
@@ -257,20 +284,13 @@ void DashboardWindow::frontCompCb(const sensor_msgs::msg::CompressedImage::Share
       "frontCompCb: QImage decode failed (format=%s)", msg->format.c_str());
     return;
   }
-
-  // Normalise to RGB888 for consistent painting
-  if (img.format() != QImage::Format_RGB888 && img.format() != QImage::Format_BGR888) {
+  if (img.format() != QImage::Format_RGB888 && img.format() != QImage::Format_BGR888)
     img = img.convertToFormat(QImage::Format_RGB888);
-  }
 
-  {
-    std::lock_guard<std::mutex> lk(img_mtx_);
-    latest_front_ = img;
-  }
+  { std::lock_guard<std::mutex> lk(img_mtx_); latest_front_ = img; }
   new_front_.store(true, std::memory_order_release);
 }
 
-// --------- Rear raw Image callback ----------
 void DashboardWindow::rearImgCb(const sensor_msgs::msg::Image::SharedPtr msg) {
   if (!msg) return;
   try {
@@ -283,11 +303,7 @@ void DashboardWindow::rearImgCb(const sensor_msgs::msg::Image::SharedPtr msg) {
     if (img.channels() == 1)    cv::cvtColor(img, img, cv::COLOR_GRAY2BGR);
 
     const QImage qimg = cvMatToQImageRGB(img);
-
-    {
-      std::lock_guard<std::mutex> lk(img_mtx_);
-      latest_rear_ = qimg;
-    }
+    { std::lock_guard<std::mutex> lk(img_mtx_); latest_rear_ = qimg; }
     new_rear_.store(true, std::memory_order_release);
 
   } catch (const std::exception& e) {
@@ -297,17 +313,12 @@ void DashboardWindow::rearImgCb(const sensor_msgs::msg::Image::SharedPtr msg) {
   }
 }
 
-// --------- Scan callback ----------
 void DashboardWindow::scanCb(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
   if (!msg) return;
-  {
-    std::lock_guard<std::mutex> lk(scan_mtx_);
-    latest_scan_ = *msg;
-  }
+  { std::lock_guard<std::mutex> lk(scan_mtx_); latest_scan_ = *msg; }
   new_scan_.store(true, std::memory_order_release);
 }
 
-// --------- Render tick (~30 FPS, GUI thread only) ----------
 void DashboardWindow::onRenderTick() {
   QImage f, r;
   sensor_msgs::msg::LaserScan scan;
@@ -338,9 +349,7 @@ void DashboardWindow::onRenderTick() {
   if (have_scan)   lidar_->setScan(scan);
 }
 
-// --------- Apply topics ----------
 void DashboardWindow::onApplyTopics() {
-  // Reset everything first to avoid duplicate subscriptions
   front_sub_.reset();
   front_comp_sub_.reset();
   rear_sub_.reset();
@@ -348,18 +357,20 @@ void DashboardWindow::onApplyTopics() {
   cmd_pub_.reset();
   torch_client_.reset();
   torch_off_client_.reset();
+  rec_start_client_.reset();
+  rec_stop_client_.reset();
 
   cmd_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>(
     cmdvel_topic_->text().toStdString(), rclcpp::QoS(10));
 
   torch_client_     = node_->create_client<std_srvs::srv::Trigger>("/pioneer_base/torch_pulse");
   torch_off_client_ = node_->create_client<std_srvs::srv::Trigger>("/pioneer_base/torch_off");
+  rec_start_client_ = node_->create_client<std_srvs::srv::Trigger>("/bag_recorder/start_recording");
+  rec_stop_client_  = node_->create_client<std_srvs::srv::Trigger>("/bag_recorder/stop_recording");
 
-  // KeepLast(1) + reliable = always the newest frame, no queue buildup
   auto image_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
   auto scan_qos  = rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
 
-  // Front: choose compressed vs raw based on topic name
   const std::string front_topic = front_topic_->text().toStdString();
   const bool is_compressed =
     front_topic.size() >= 11 &&
@@ -369,12 +380,12 @@ void DashboardWindow::onApplyTopics() {
     front_comp_sub_ = node_->create_subscription<sensor_msgs::msg::CompressedImage>(
       front_topic, image_qos,
       std::bind(&DashboardWindow::frontCompCb, this, std::placeholders::_1));
-    RCLCPP_INFO(node_->get_logger(), "Front subscribed as CompressedImage: %s", front_topic.c_str());
+    RCLCPP_INFO(node_->get_logger(), "Front: CompressedImage @ %s", front_topic.c_str());
   } else {
     front_sub_ = node_->create_subscription<sensor_msgs::msg::Image>(
       front_topic, image_qos,
       std::bind(&DashboardWindow::frontImgCb, this, std::placeholders::_1));
-    RCLCPP_INFO(node_->get_logger(), "Front subscribed as Image: %s", front_topic.c_str());
+    RCLCPP_INFO(node_->get_logger(), "Front: Image @ %s", front_topic.c_str());
   }
 
   rear_sub_ = node_->create_subscription<sensor_msgs::msg::Image>(

@@ -29,12 +29,35 @@ ament_target_dependencies(base_controller
   pioneer_msgs
   std_srvs
 )
+install(TARGETS
+  bag_recorder
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(TARGETS
   base_controller
   DESTINATION lib/${PROJECT_NAME}
 )
+# C++ nodes
+add_executable(base_controller src/base_controller.cpp)
+ament_target_dependencies(base_controller
+  rclcpp
+  geometry_msgs
+  pioneer_msgs
+  std_srvs
+)
 
+add_executable(bag_recorder src/bag_recorder.cpp)
+ament_target_dependencies(bag_recorder
+  rclcpp
+  std_srvs
+)
+
+install(TARGETS
+  base_controller
+  bag_recorder
+  DESTINATION lib/${PROJECT_NAME}
+)
 # Python side:
 ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS

@@ -30,7 +30,22 @@ def generate_launch_description():
         arguments=['-robotPort', '/dev/ttyS0'],
     )
 
+    bag_recorder = Node(
+        package='pioneer3',
+        executable='bag_recorder',
+        name='bag_recorder',
+        output='screen',
+        parameters=[{
+            'laptop_user': 'kush',
+            'laptop_ip': '192.168.1.8',
+            'laptop_dir': '~/bags',
+            'robot_dir': '/home/easel/bags',
+            'scan_topic': '/scan',
+        }]
+    )
+
     return LaunchDescription([
         lidar_launch,
         base_controller,
+        bag_recorder,
     ])

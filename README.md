@@ -14,6 +14,7 @@ That original repo focused on a baseline bringup (base control + LiDAR + RViz + 
 - Laptop-first ops workflow (multi-machine ROS 2 + repeatable commands)
 - Physical sensor mast (monopod + stack light + cue light + machined aluminum plates)
 - Torch/cue light toggle via Pioneer DIGOUT (OD6) + relay, controlled from dashboard
+- Per-trial LiDAR rosbag recording with automatic transfer to laptop
 
 ---
 
@@ -34,6 +35,7 @@ That original repo focused on a baseline bringup (base control + LiDAR + RViz + 
 
 ## 0.2 Network
 - Robot and laptop on same Wi‑Fi/Ethernet subnet
+- Robot IP: `192.168.1.31` | Laptop IP: `192.168.1.8`
 - We use:
   - `ROS_DOMAIN_ID=7`
   - `rmw_cyclonedds_cpp`
@@ -196,6 +198,7 @@ ros2 daemon start
 
 The **robot** runs a single launch file (headless) that starts:
 - base controller
+- bag recorder
 - LiDAR
 - OAK front camera
 - rear USB camera
@@ -420,9 +423,71 @@ The ARCOS DIGOUT command (#30) takes a two-byte argument: **high byte = bit mask
 
 ---
 
-# 10) Laptop-first Git workflow (recommended)
+# 10) Trial recording (LiDAR rosbag)
 
-## 10.1 Edit on laptop → push
+Each experiment trial can be recorded and automatically transferred to the laptop using the **⏺ START TRIAL** / **⏹ STOP TRIAL** button in the dashboard.
+
+## 10.1 How it works
+- The `bag_recorder` node runs on the robot as part of the standard bringup.
+- Clicking **⏺ START TRIAL** calls `/bag_recorder/start_recording` — starts `ros2 bag record /scan` with a timestamped output name under `/home/easel/bags/`.
+- Clicking **⏹ STOP TRIAL** calls `/bag_recorder/stop_recording` — sends SIGINT to the bag process (clean flush), then `rsync`s the bag directory to `kush@192.168.1.8:~/bags/` automatically.
+- Bags are named `session_YYYYMMDD_HHMMSS` so every trial is uniquely identified.
+
+## 10.2 Prerequisites
+SSH key from robot to laptop must be set up (one-time):
+```bash
+# On robot
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519   # skip if key already exists
+ssh-copy-id kush@192.168.1.8
+# Test
+ssh -o BatchMode=yes kush@192.168.1.8 'echo OK'
+```
+
+Laptop must have SSH server running:
+```bash
+# On laptop
+sudo apt install -y openssh-server
+sudo systemctl enable ssh
+sudo systemctl start ssh
+```
+
+## 10.3 ROS services
+
+| Service | Type | Effect |
+|---|---|---|
+| `/bag_recorder/start_recording` | `std_srvs/srv/Trigger` | Start recording `/scan` to timestamped bag |
+| `/bag_recorder/stop_recording` | `std_srvs/srv/Trigger` | Stop recording and rsync bag to laptop |
+
+Test from laptop:
+```bash
+ros2 service list | grep bag_recorder
+ros2 service call /bag_recorder/start_recording std_srvs/srv/Trigger "{}"
+# ... run trial ...
+ros2 service call /bag_recorder/stop_recording std_srvs/srv/Trigger "{}"
+```
+
+## 10.4 Tunable parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `laptop_user` | `kush` | Username on laptop for rsync |
+| `laptop_ip` | `192.168.1.8` | Laptop IP address |
+| `laptop_dir` | `~/bags` | Destination directory on laptop |
+| `robot_dir` | `/home/easel/bags` | Where bags are saved on the robot |
+| `scan_topic` | `/scan` | Topic to record |
+
+## 10.5 Verify bags on laptop
+After stopping a trial:
+```bash
+ls ~/bags/
+ros2 bag info ~/bags/session_<timestamp>
+```
+
+---
+
+# 11) Laptop-first Git workflow (recommended)
+
+## 11.1 Edit on laptop → push
 ```bash
 cd ~/ros2_ws/src/pioneer3
 git pull                        # always pull before editing
@@ -432,7 +497,7 @@ git commit -m "Describe your change"
 git push
 ```
 
-## 10.2 Robot pulls + rebuild pioneer3 + restart service
+## 11.2 Robot pulls + rebuild pioneer3 + restart service
 ```bash
 ssh -t easel@192.168.1.31 '
   source /opt/ros/jazzy/setup.bash &&
@@ -444,7 +509,7 @@ ssh -t easel@192.168.1.31 '
 '
 ```
 
-## 10.3 Rebuild dashboard on laptop only
+## 11.3 Rebuild dashboard on laptop only
 ```bash
 cd ~/ros2_ws
 colcon build --symlink-install \
@@ -456,9 +521,9 @@ No robot-side rebuild or restart needed for dashboard-only changes.
 
 ---
 
-# 11) Troubleshooting (field-focused)
+# 12) Troubleshooting (field-focused)
 
-## 11.1 "Dashboard works but no LiDAR in the widget"
+## 12.1 "Dashboard works but no LiDAR in the widget"
 1) Confirm `/scan` is publishing (laptop):
 ```bash
 ros2 topic hz /scan --window 50
@@ -472,7 +537,7 @@ ros2 node info /pioneer_dashboard_app | sed -n '1,120p'
 ros2 topic info /scan -v | head -n 90
 ```
 
-## 11.2 LiDAR timeout / intermittent scan (SL_RESULT_OPERATION_TIMEOUT)
+## 12.2 LiDAR timeout / intermittent scan (SL_RESULT_OPERATION_TIMEOUT)
 A very common cause on Ubuntu is **ModemManager** grabbing `/dev/ttyUSB0`.
 On robot:
 ```bash
@@ -485,7 +550,7 @@ Then verify:
 ros2 topic hz /scan --window 50
 ```
 
-## 11.3 Rear camera missing
+## 12.3 Rear camera missing
 Robot:
 ```bash
 v4l2-ctl --list-devices
@@ -496,10 +561,10 @@ Laptop:
 ros2 topic list | grep rear
 ```
 
-## 11.4 Duplicate node-name warnings
+## 12.4 Duplicate node-name warnings
 Ensure you do not run multiple bringups (service + manual) at the same time.
 
-## 11.5 Front camera "lags" but topics look healthy
+## 12.5 Front camera "lags" but topics look healthy
 This usually means you're viewing **raw** frames over the network, or the OAK pipeline is doing extra work.
 
 1) Check the compressed rate (laptop):
@@ -515,25 +580,53 @@ timeout 8 ros2 topic hz /oak/rgb/image_raw/compressed --window 50
 - Reduce OAK resolution / FPS in `config/oak_rgb_only.yaml`
 - Keep the dashboard "latest-only" buffering + render tick enabled (drops old frames instead of building latency)
 
-## 11.6 Torch button does nothing (dashboard stays grey)
-The `service_is_ready()` check was removed from the torch button — if the button is completely unresponsive, click **Apply / Reconnect** in the Topics box to recreate the service clients, then try again.
+## 12.6 Torch button does nothing (dashboard stays grey)
+Click **Apply / Reconnect** in the Topics box to recreate the service clients, then try again.
 
-## 11.7 Torch relay clicks but light doesn't respond
+## 12.7 Torch relay clicks but light doesn't respond
 1) Confirm AUX1 LED is lit on the Pioneer User Control Panel. The 5V line on the IDC connector (pin 18) is AUX-switched — without AUX power the relay has no coil voltage.
-2) If AUX is on and the relay clicks but the light doesn't change mode, the pulse timing may need adjustment. Increase `torch_gap_ms`:
+2) If AUX is on and the relay clicks but the light doesn't change mode, increase `torch_gap_ms`:
 ```bash
 ros2 param set /pioneer_base torch_gap_ms 700
 ```
-3) If the relay doesn't click at all, measure pin 14 to pin 20 with a multimeter while calling `torch_pulse`. Should pulse 0V → 5V → 0V. If it stays high permanently, the service restart loop may not have fully restarted — run `sudo systemctl restart pioneer_robot.service`.
+3) If the relay doesn't click at all, measure pin 14 to pin 20 with a multimeter while calling `torch_pulse`. Should pulse 0V → 5V → 0V. If it stays high permanently, restart the service:
+```bash
+ssh -t easel@192.168.1.31 'sudo systemctl restart pioneer_robot.service'
+```
 
-## 11.8 colcon can't find pioneer_dashboard_app
+## 12.8 colcon can't find pioneer_dashboard_app
 The dashboard is a subdirectory inside `pioneer3`, not a top-level package. Always build it with the explicit `--base-paths` flag:
 ```bash
 colcon build --symlink-install \
   --packages-select pioneer_dashboard_app \
   --base-paths src/pioneer3/pioneer_dashboard_app
 ```
-If you see `ignoring unknown package 'pioneer_dashboard_app'` without this flag, that is expected — use the alias from §8.2 instead.
+
+## 12.9 Trial recording — bag transfer fails
+1) Confirm SSH key is set up from robot to laptop (§10.2).
+2) Confirm laptop SSH server is running:
+```bash
+systemctl status ssh --no-pager
+```
+3) Test connectivity manually from robot:
+```bash
+ssh -o BatchMode=yes kush@192.168.1.8 'echo OK'
+```
+4) If the bag was saved but not transferred, it stays at `/home/easel/bags/` on the robot — manually rsync it:
+```bash
+rsync -avz easel@192.168.1.31:~/bags/ ~/bags/
+```
+
+## 12.10 START TRIAL button has no effect
+Confirm `bag_recorder` node is running:
+```bash
+ros2 node list | grep bag_recorder
+ros2 service list | grep bag_recorder
+```
+If missing, the node didn't start — check the journal:
+```bash
+ssh -t easel@192.168.1.31 'journalctl -u pioneer_robot.service -n 50 --no-pager'
+```
 
 ---
 
@@ -583,11 +676,13 @@ When the robot stack is healthy, you should see these topics from the laptop:
 - Velocity command: `/cmd_vel` (`geometry_msgs/msg/Twist`)
 - Torch on service: `/pioneer_base/torch_pulse` (`std_srvs/srv/Trigger`)
 - Torch off service: `/pioneer_base/torch_off` (`std_srvs/srv/Trigger`)
+- Trial start: `/bag_recorder/start_recording` (`std_srvs/srv/Trigger`)
+- Trial stop: `/bag_recorder/stop_recording` (`std_srvs/srv/Trigger`)
 
 List + types:
 ```bash
 ros2 topic list -t | egrep "(/scan|/oak/rgb/image_raw|/rear/image_raw|/cmd_vel)"
-ros2 service list | egrep "(torch_pulse|torch_off)"
+ros2 service list | egrep "(torch|bag_recorder)"
 ```
 
 ## A3.2 QoS expectations (important)
@@ -599,15 +694,12 @@ Check `/scan` QoS:
 ```bash
 ros2 topic info /scan -v | head -n 90
 ```
-You want to see:
-- Publisher `sllidar_node` reliability = RELIABLE
-- Subscriber `pioneer_dashboard_app` reliability = RELIABLE
 
 ## A3.3 Health check commands (fast)
 ```bash
 ros2 topic hz /scan --window 50
 ros2 node info /pioneer_dashboard_app | sed -n '1,90p'
-ros2 service list | grep torch
+ros2 service list | grep -E "(torch|bag_recorder)"
 ```
 
 ---
@@ -661,10 +753,20 @@ ros2 param set /pioneer_base torch_gap_ms 700
 ```
 and repeat the test.
 
-## A4.4 If something is missing
-- If `/scan` is missing or unstable: reboot robot or disable ModemManager (Troubleshooting §11.2)
+## A4.4 Running a trial
+1. Click **⏺ START TRIAL** (blue) in the dashboard — recording begins on the robot.
+2. Run the trial.
+3. Click **⏹ STOP TRIAL** (red) — recording stops, bag is transferred to `~/bags/` on your laptop automatically.
+4. Verify on laptop:
+```bash
+ls ~/bags/
+```
+
+## A4.5 If something is missing
+- If `/scan` is missing or unstable: reboot robot or disable ModemManager (§12.2)
 - If cameras are missing: replug USB cameras and restart `pioneer_robot.service`
-- If torch doesn't respond: check AUX1 LED on User Control Panel (§11.7)
+- If torch doesn't respond: check AUX1 LED on User Control Panel (§12.7)
+- If trial recording fails: check SSH key setup (§10.2) and laptop SSH server (§12.9)
 
 Restart service (robot):
 ```bash
@@ -672,33 +774,3 @@ ssh -t easel@192.168.1.31 'sudo systemctl restart pioneer_robot.service'
 ```
 
 ---
-
-# Future Work
-
-## F1) Per-session LiDAR rosbag recording and automatic transfer to laptop
-
-**Goal:** automatically record `/scan` to a rosbag at the start of each experiment session and transfer the bag file to the operator laptop at the end of the session.
-
-**Planned approach:**
-
-Record on the robot using `ros2 bag record` as part of bringup or triggered manually:
-```bash
-# Record only the scan topic, timestamped by session
-ros2 bag record /scan -o ~/bags/session_$(date +%Y%m%d_%H%M%S)
-```
-
-Or integrate into the systemd bringup as a separate service that starts after `pioneer_robot.service`.
-
-At the end of the session, transfer the bag to the laptop over the local network:
-```bash
-# On laptop — pull latest bag from robot
-scp -r easel@192.168.1.31:~/bags/<session_name> ~/bags/
-```
-
-Or automate with `rsync` to sync all new bags:
-```bash
-rsync -avz easel@192.168.1.31:~/bags/ ~/bags/
-```
-
-**Longer term:** add a "Start Recording" / "Stop & Transfer" button to the dashboard that triggers bag recording via a ROS service and automatically rsync's the completed bag to the laptop when stopped.
-

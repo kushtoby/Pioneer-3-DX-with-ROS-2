@@ -5,7 +5,6 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-# find dependencies:
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
@@ -16,12 +15,11 @@ find_package(pioneer_msgs REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(std_srvs REQUIRED)
 
-
 # ARIA
 include_directories(/usr/local/Aria/include)
 link_directories(/usr/local/Aria/lib)
 
-# C++ node:
+# base_controller
 add_executable(base_controller src/base_controller.cpp)
 ament_target_dependencies(base_controller
   rclcpp
@@ -29,24 +27,12 @@ ament_target_dependencies(base_controller
   pioneer_msgs
   std_srvs
 )
-install(TARGETS
-  bag_recorder
-  DESTINATION lib/${PROJECT_NAME}
+target_link_libraries(base_controller
+  Aria
+  pthread
 )
 
-install(TARGETS
-  base_controller
-  DESTINATION lib/${PROJECT_NAME}
-)
-# C++ nodes
-add_executable(base_controller src/base_controller.cpp)
-ament_target_dependencies(base_controller
-  rclcpp
-  geometry_msgs
-  pioneer_msgs
-  std_srvs
-)
-
+# bag_recorder
 add_executable(bag_recorder src/bag_recorder.cpp)
 ament_target_dependencies(bag_recorder
   rclcpp
@@ -58,33 +44,24 @@ install(TARGETS
   bag_recorder
   DESTINATION lib/${PROJECT_NAME}
 )
-# Python side:
+
+# Python side
 ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS
   scripts/lidar_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# Launch files:
+# Launch files + config
 install(DIRECTORY
   launch
   config
   DESTINATION share/${PROJECT_NAME}
 )
 
-target_link_libraries(base_controller
-  Aria
-  pthread
-)
-
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # comment the line when this package is in a git repo and when
-  # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()

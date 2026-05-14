@@ -117,8 +117,8 @@ void DashboardWindow::setupUi() {
 
   auto* sg = new QGridLayout();
   lin_slider_ = new QSlider(Qt::Horizontal);
-  lin_slider_->setRange(0, 80);
-  lin_slider_->setValue(20);
+  lin_slider_->setRange(0, 120);
+  lin_slider_->setValue(80);
   ang_slider_ = new QSlider(Qt::Horizontal);
   ang_slider_->setRange(0, 300);
   ang_slider_->setValue(120);

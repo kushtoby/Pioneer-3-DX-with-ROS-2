@@ -230,8 +230,8 @@ int main(int argc, char** argv)
 
   robot.lock();
   robot.enableMotors();
-  robot.setTransVelMax(300.0);
-  robot.setRotVelMax(40.0);
+  robot.setTransVelMax(1200.0);
+  robot.setRotVelMax(300.0);
   robot.unlock();
 
   robot.runAsync(true);

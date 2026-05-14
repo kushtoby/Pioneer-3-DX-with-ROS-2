@@ -159,8 +159,8 @@ void DashboardPanel::setupUi()
   auto * speeds = new QGridLayout();
   speeds->addWidget(new QLabel("Linear speed (m/s x100):"), 0, 0);
   lin_slider_ = new QSlider(Qt::Horizontal);
-  lin_slider_->setRange(0, 80);   // 0.00 -> 0.80 m/s
-  lin_slider_->setValue(20);      // 0.20 m/s
+  lin_slider_->setRange(0, 120);   // 0.00 -> 0.80 m/s
+  lin_slider_->setValue(80);      // 0.20 m/s
   speeds->addWidget(lin_slider_, 0, 1);
 
   speeds->addWidget(new QLabel("Angular speed (rad/s x100):"), 1, 0);

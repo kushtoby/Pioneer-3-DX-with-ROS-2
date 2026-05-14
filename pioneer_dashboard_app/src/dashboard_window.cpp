@@ -73,6 +73,26 @@ DashboardWindow::DashboardWindow(std::shared_ptr<rclcpp::Node> node)
   render_timer_.setInterval(33);
   connect(&render_timer_, &QTimer::timeout, this, &DashboardWindow::onRenderTick);
   render_timer_.start();
+
+  // Joystick init
+  joy_fd_ = open("/dev/input/js0", O_RDONLY | O_NONBLOCK);
+  if (joy_fd_ >= 0) {
+    joy_status_->setText("🎮 Joystick connected");
+    joy_status_->setStyleSheet("QLabel{color:#00cc44;font-weight:bold;}");
+    joy_running_ = true;
+    joy_thread_ = std::thread(&DashboardWindow::joystickThreadFn, this);
+    RCLCPP_INFO(node_->get_logger(), "Joystick opened at /dev/input/js0");
+  } else {
+    joy_status_->setText("No joystick");
+    joy_status_->setStyleSheet("QLabel{color:#888;}");
+    RCLCPP_INFO(node_->get_logger(), "No joystick at /dev/input/js0 — GUI only");
+  }
+}
+
+DashboardWindow::~DashboardWindow() {
+  joy_running_ = false;
+  if (joy_fd_ >= 0) { ::close(joy_fd_); joy_fd_ = -1; }
+  if (joy_thread_.joinable()) joy_thread_.join();
 }
 
 void DashboardWindow::setupUi() {
@@ -104,6 +124,11 @@ void DashboardWindow::setupUi() {
 
   leftCol->addWidget(topicsBox);
 
+  // Joystick status label
+  joy_status_ = new QLabel("No joystick");
+  joy_status_->setStyleSheet("QLabel{color:#888;}");
+  leftCol->addWidget(joy_status_);
+
   // Teleop box
   auto* teleBox = new QGroupBox("Teleop");
   auto* tv = new QVBoxLayout(teleBox);
@@ -122,8 +147,8 @@ void DashboardWindow::setupUi() {
   ang_slider_ = new QSlider(Qt::Horizontal);
   ang_slider_->setRange(0, 300);
   ang_slider_->setValue(120);
-  sg->addWidget(new QLabel("Linear (m/s x100)"),    0, 0); sg->addWidget(lin_slider_, 0, 1);
-  sg->addWidget(new QLabel("Angular (rad/s x100)"), 1, 0); sg->addWidget(ang_slider_, 1, 1);
+  sg->addWidget(new QLabel("Linear (m/s x100)  [🎮 L1/R1]"),    0, 0); sg->addWidget(lin_slider_, 0, 1);
+  sg->addWidget(new QLabel("Angular (rad/s x100)  [🎮 L2/R2]"), 1, 0); sg->addWidget(ang_slider_, 1, 1);
   tv->addLayout(sg);
 
   // Torch button
@@ -180,7 +205,7 @@ void DashboardWindow::setupUi() {
   back_  = new QPushButton("▼");
   left_  = new QPushButton("⟲");
   right_ = new QPushButton("⟳");
-  stop_  = new QPushButton("STOP");
+  stop_  = new QPushButton("STOP  [🎮 ○]");
   stop_->setStyleSheet("QPushButton { font-weight: bold; }");
 
   bg->addWidget(fwd_,   0, 1);
@@ -434,5 +459,109 @@ void DashboardWindow::onLeftReleased()  { drive_ = DriveCmd::STOP; publishStop()
 void DashboardWindow::onRightReleased() { drive_ = DriveCmd::STOP; publishStop(); }
 
 void DashboardWindow::onStopClicked()   { drive_ = DriveCmd::STOP; publishStop(); }
+
+// -------- Joystick thread --------
+void DashboardWindow::joystickThreadFn() {
+  struct js_event event;
+  while (joy_running_) {
+    ssize_t n = read(joy_fd_, &event, sizeof(event));
+    if (n != sizeof(event)) {
+      if (errno != EAGAIN) {
+        RCLCPP_WARN(node_->get_logger(), "Joystick disconnected or read error");
+        QMetaObject::invokeMethod(joy_status_, [this]() {
+          joy_status_->setText("Joystick disconnected");
+          joy_status_->setStyleSheet("QLabel{color:#cc4400;font-weight:bold;}");
+        }, Qt::QueuedConnection);
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      continue;
+    }
+    if (event.type & JS_EVENT_INIT) continue;
+
+    if (event.type == JS_EVENT_AXIS) {
+      const int val = static_cast<int>(event.value);
+
+      if (event.number == JOY_AXIS_LY) {
+        DriveCmd cmd = DriveCmd::STOP;
+        if (val < -JOY_DEADZONE)     cmd = DriveCmd::FWD;
+        else if (val > JOY_DEADZONE) cmd = DriveCmd::BACK;
+        if (cmd != joy_last_drive_) {
+          joy_last_drive_ = cmd;
+          QMetaObject::invokeMethod(this, [this, cmd]() { onJoyDrive(cmd); }, Qt::QueuedConnection);
+        }
+      } else if (event.number == JOY_AXIS_LX) {
+        // Y-axis takes priority — don't override an active fwd/back
+        if (joy_last_drive_ == DriveCmd::FWD || joy_last_drive_ == DriveCmd::BACK) continue;
+        DriveCmd cmd = DriveCmd::STOP;
+        if (val < -JOY_DEADZONE)     cmd = DriveCmd::LEFT;
+        else if (val > JOY_DEADZONE) cmd = DriveCmd::RIGHT;
+        if (cmd != joy_last_drive_) {
+          joy_last_drive_ = cmd;
+          QMetaObject::invokeMethod(this, [this, cmd]() { onJoyDrive(cmd); }, Qt::QueuedConnection);
+        }
+      }
+    } else if (event.type == JS_EVENT_BUTTON && event.value == 1) {
+      switch (event.number) {
+        case JOY_BTN_X:
+          QMetaObject::invokeMethod(this, [this]() { onJoyTorch(); },      Qt::QueuedConnection); break;
+        case JOY_BTN_O:
+          QMetaObject::invokeMethod(this, [this]() { onJoyStop(); },       Qt::QueuedConnection); break;
+        case JOY_BTN_SQ:
+          QMetaObject::invokeMethod(this, [this]() { onJoyStartTrial(); }, Qt::QueuedConnection); break;
+        case JOY_BTN_TRI:
+          QMetaObject::invokeMethod(this, [this]() { onJoyReconnect(); },  Qt::QueuedConnection); break;
+        case JOY_BTN_L1:
+          QMetaObject::invokeMethod(this, [this]() { onJoyLinStep(-5); },  Qt::QueuedConnection); break;
+        case JOY_BTN_R1:
+          QMetaObject::invokeMethod(this, [this]() { onJoyLinStep(+5); },  Qt::QueuedConnection); break;
+        case JOY_BTN_L2:
+          QMetaObject::invokeMethod(this, [this]() { onJoyAngStep(-5); },  Qt::QueuedConnection); break;
+        case JOY_BTN_R2:
+          QMetaObject::invokeMethod(this, [this]() { onJoyAngStep(+5); },  Qt::QueuedConnection); break;
+        default: break;
+      }
+    }
+  }
+}
+
+void DashboardWindow::onJoyDrive(DriveCmd cmd) {
+  if (!enable_teleop_->isChecked()) return;
+  drive_ = cmd;
+  fwd_->setDown(cmd == DriveCmd::FWD);
+  back_->setDown(cmd == DriveCmd::BACK);
+  left_->setDown(cmd == DriveCmd::LEFT);
+  right_->setDown(cmd == DriveCmd::RIGHT);
+}
+
+void DashboardWindow::onJoyLinStep(int delta) {
+  lin_slider_->setValue(lin_slider_->value() + delta);
+}
+
+void DashboardWindow::onJoyAngStep(int delta) {
+  ang_slider_->setValue(ang_slider_->value() + delta);
+}
+
+void DashboardWindow::onJoyStop() {
+  drive_ = DriveCmd::STOP;
+  joy_last_drive_ = DriveCmd::STOP;
+  fwd_->setDown(false); back_->setDown(false);
+  left_->setDown(false); right_->setDown(false);
+  publishStop();
+}
+
+void DashboardWindow::onJoyTorch() {
+  // Simulate a click — reuses all existing torch toggle logic and button styling
+  torch_btn_->click();
+}
+
+void DashboardWindow::onJoyReconnect() {
+  onApplyTopics();
+}
+
+void DashboardWindow::onJoyStartTrial() {
+  // Simulate a click on the recording button — toggles start/stop just like the GUI button
+  rec_btn_->click();
+}
 
 } // namespace pioneer_dashboard_app

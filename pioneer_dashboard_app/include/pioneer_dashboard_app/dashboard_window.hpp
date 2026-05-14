@@ -10,6 +10,10 @@
 #include <QLabel>
 #include <mutex>
 #include <atomic>
+#include <thread>
+#include <fcntl.h>
+#include <unistd.h>
+#include <linux/joystick.h>
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
@@ -45,6 +49,7 @@ class DashboardWindow : public QMainWindow {
   Q_OBJECT
 public:
   explicit DashboardWindow(std::shared_ptr<rclcpp::Node> node);
+  ~DashboardWindow();
 
 private:
   void setupUi();
@@ -62,6 +67,33 @@ private:
   enum class DriveCmd { STOP, FWD, BACK, LEFT, RIGHT };
   void publishStop();
   void publishFromState();
+
+  // Joystick
+  void joystickThreadFn();
+  void onJoyDrive(DriveCmd cmd);
+  void onJoyLinStep(int delta);
+  void onJoyAngStep(int delta);
+  void onJoyStop();
+  void onJoyTorch();
+  void onJoyReconnect();
+  void onJoyStartTrial();
+
+  static constexpr int JOY_DEADZONE = 3000;
+  static constexpr int JOY_AXIS_LX  = 0;  // left stick X  -> turn
+  static constexpr int JOY_AXIS_LY  = 1;  // left stick Y  -> fwd/back
+  static constexpr int JOY_BTN_X    = 0;  // Cross         -> torch
+  static constexpr int JOY_BTN_O    = 1;  // Circle        -> stop
+  static constexpr int JOY_BTN_SQ   = 2;  // Square        -> start/stop trial
+  static constexpr int JOY_BTN_TRI  = 3;  // Triangle      -> reconnect
+  static constexpr int JOY_BTN_L1   = 4;  // L1            -> lin speed -
+  static constexpr int JOY_BTN_R1   = 5;  // R1            -> lin speed +
+  static constexpr int JOY_BTN_L2   = 6;  // L2            -> ang speed -
+  static constexpr int JOY_BTN_R2   = 7;  // R2            -> ang speed +
+
+  int                 joy_fd_{-1};
+  std::thread         joy_thread_;
+  std::atomic<bool>   joy_running_{false};
+  DriveCmd            joy_last_drive_{DriveCmd::STOP};
 
 private slots:
   void onApplyTopics();
@@ -111,6 +143,7 @@ private:
   QLineEdit*   scan_topic_{nullptr};
   QLineEdit*   cmdvel_topic_{nullptr};
   QPushButton* apply_{nullptr};
+  QLabel*      joy_status_{nullptr};
   QCheckBox*   enable_teleop_{nullptr};
   QSlider*     lin_slider_{nullptr};
   QSlider*     ang_slider_{nullptr};

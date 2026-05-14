@@ -15,6 +15,7 @@ That original repo focused on a baseline bringup (base control + LiDAR + RViz + 
 - Physical sensor mast (monopod + stack light + cue light + machined aluminum plates)
 - Torch/cue light toggle via Pioneer DIGOUT (OD6) + relay, controlled from dashboard
 - Per-trial LiDAR rosbag recording with automatic transfer to laptop
+- PS4 DualShock 4 joystick support integrated into dashboard
 
 ---
 
@@ -32,6 +33,7 @@ That original repo focused on a baseline bringup (base control + LiDAR + RViz + 
 - 5V 1-channel relay module (optocoupler isolated) — wired to Pioneer User I/O OD6 (pin 14)
 - SEAMAGIC rechargeable work light — wired through relay for torch toggle
 - Laptop on same network for operation
+- PS4 DualShock 4 controller (USB or Bluetooth) — plugged into laptop
 
 ## 0.2 Network
 - Robot and laptop on same Wi‑Fi/Ethernet subnet
@@ -42,7 +44,12 @@ That original repo focused on a baseline bringup (base control + LiDAR + RViz + 
   - subnet discovery
 
 ## 0.3 Workspace layout
-The repo lives at `~/ros2_ws/src/pioneer3/` and contains all packages as subdirectories. The dashboard app is at `pioneer3/pioneer_dashboard_app/`. There should be **no** standalone `pioneer_dashboard_app/` directly under `src/` — if one exists from an earlier setup, delete it:
+The repo lives at `~/ros2_ws/src/pioneer3/` and contains all packages as subdirectories:
+- `pioneer3/` — top-level ROS package (base controller, launch files, config)
+- `pioneer3/pioneer_dashboard_app/` — standalone Qt dashboard (runs on laptop)
+- `pioneer3/pioneer_dashboard_rviz/` — RViz plugin variant of the dashboard
+
+There should be **no** standalone `pioneer_dashboard_app/` directly under `src/`. If one exists from an earlier setup, delete it:
 ```bash
 rm -rf ~/ros2_ws/src/pioneer_dashboard_app
 ```
@@ -52,14 +59,9 @@ rm -rf ~/ros2_ws/src/pioneer_dashboard_app
 # 1) Robot PC — Fresh install (Ubuntu 24.04 + ROS 2 Jazzy)
 
 ## 1.1 Install ROS 2 Jazzy
-On robot:
 ```bash
 sudo apt update
 sudo apt install -y ros-jazzy-desktop
-```
-
-Sanity check:
-```bash
 source /opt/ros/jazzy/setup.bash
 ros2 --help
 ```
@@ -92,23 +94,16 @@ sudo apt install -y ros-jazzy-rmw-cyclonedds-cpp
 
 ## 2.1 LiDAR (RPLIDAR A1) driver
 We use `sllidar_ros2` in this stack.
-
-### Option A (recommended): build `sllidar_ros2` in the same workspace
-If this repo vendors it into `~/ros2_ws/src`, you're done. If not:
 ```bash
 cd ~/ros2_ws/src
 git clone https://github.com/Slamtec/sllidar_ros2.git
 ```
 
-> If your LiDAR ever shows `SL_RESULT_OPERATION_TIMEOUT`, see Troubleshooting §11.2.
-
 ## 2.2 Front camera (OAK‑D‑Pro): `depthai_ros_driver`
-Install via apt if available on your setup:
 ```bash
 sudo apt update
 sudo apt install -y ros-jazzy-depthai-ros-driver
 ```
-If apt is not available/desired, build from source (follow depthai_ros_driver docs).
 
 ### 2.2.1 OAK permissions (udev rules)
 If you see "Insufficient permissions … X_LINK_UNBOOTED":
@@ -119,10 +114,6 @@ If you see "Insufficient permissions … X_LINK_UNBOOTED":
 ```bash
 sudo apt update
 sudo apt install -y ros-jazzy-v4l2-camera v4l-utils
-```
-
-Verify devices:
-```bash
 v4l2-ctl --list-devices
 ls -l /dev/video*
 ```
@@ -131,15 +122,11 @@ ls -l /dev/video*
 
 # 3) Robot PC — Install ARIA (Pioneer base control)
 
-This project uses ARIA to send velocity commands to the Pioneer base and to control digital output pins.
-
 ## 3.1 Install/build ARIA
-If ARIA is not installed, build/install it (your lab may already have it).
-Typical outcome expected by our build:
-- headers under `/usr/local/Aria/include`
-- library under `/usr/local/Aria/lib`
+Expected paths:
+- Header: `/usr/local/Aria/include/Aria.h`
+- Library: `/usr/local/Aria/lib/libAria.so`
 
-Confirm:
 ```bash
 ls /usr/local/Aria/include/Aria.h
 ls /usr/local/Aria/lib | grep -i Aria || true
@@ -178,7 +165,7 @@ if [ -f ~/ros2_ws/install/setup.bash ]; then
   source ~/ros2_ws/install/setup.bash
 fi
 
-# Multi-machine ROS2 (recommended)
+# Multi-machine ROS 2
 export ROS_DOMAIN_ID=7
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 unset ROS_LOCALHOST_ONLY
@@ -192,39 +179,27 @@ ros2 daemon stop
 ros2 daemon start
 ```
 
+Laptop convenience alias (add to `~/.bashrc`):
+```bash
+alias build_dashboard='cd ~/ros2_ws && colcon build --symlink-install --packages-select pioneer_dashboard_app --base-paths src/pioneer3/pioneer_dashboard_app'
+```
+
 ---
 
 # 6) Robot bringup (manual)
 
-The **robot** runs a single launch file (headless) that starts:
-- base controller
-- bag recorder
-- LiDAR
-- OAK front camera
-- rear USB camera
-
-On robot:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch pioneer3 pioneer3_robot.launch.py
 ```
 
-## 6.1 Front camera low-latency option (recommended for live operation)
+## 6.1 Front camera low-latency option
 
-By default the OAK driver publishes **raw** and **compressed** streams. Over the network, the **compressed** stream is usually smoother.
+The dashboard defaults to `/oak/rgb/image_raw/compressed` which is decoded directly by Qt — this is the recommended setting. No republisher needed.
 
-### Option A (simplest): use the compressed topic in the dashboard
-Set the dashboard front topic to:
-- `/oak/rgb/image_raw/compressed`
-
-### Option B (best compromise): republish compressed → raw on a local "_local" topic
-This keeps the dashboard code path as `sensor_msgs/Image`, but uses the compressed feed under the hood.
-
-Run on the **robot** (or as part of your bringup):
+If you want to use the republished raw topic instead:
 ```bash
-# Creates: /oak/rgb/image_raw_local (sensor_msgs/Image)
-# Subscribes from: /oak/rgb/image_raw/compressed
 ros2 run image_transport republish \
   --ros-args \
   -p in_transport:=compressed \
@@ -233,16 +208,7 @@ ros2 run image_transport republish \
   --remap out:=/oak/rgb/image_raw_local \
   -r __node:=oak_image_republisher
 ```
-
-Then set the dashboard front topic to:
-- `/oak/rgb/image_raw_local`
-
-**Important:** don't run multiple republishers at once. If you see duplicate node-name warnings for `/image_republisher`, stop them and restart the robot bringup:
-```bash
-pkill -f "image_transport republish" || true
-pkill -f oak_image_republisher || true
-sudo systemctl restart pioneer_robot.service
-```
+Then set the dashboard front topic to `/oak/rgb/image_raw_local`.
 
 ---
 
@@ -251,36 +217,23 @@ sudo systemctl restart pioneer_robot.service
 ## 7.1 Start script
 ```bash
 mkdir -p ~/bin
-nano ~/bin/start_pioneer_robot.sh
-```
-
-Paste:
-```bash
+cat > ~/bin/start_pioneer_robot.sh << 'EOF'
 #!/usr/bin/env bash
 set -e
-
 source /opt/ros/jazzy/setup.bash
 source /home/easel/ros2_ws/install/setup.bash
-
 export ROS_DOMAIN_ID=7
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 unset ROS_LOCALHOST_ONLY
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
-
 exec ros2 launch pioneer3 pioneer3_robot.launch.py
-```
-
-```bash
+EOF
 chmod +x ~/bin/start_pioneer_robot.sh
 ```
 
 ## 7.2 systemd service
 ```bash
-sudo nano /etc/systemd/system/pioneer_robot.service
-```
-
-Paste:
-```ini
+sudo tee /etc/systemd/system/pioneer_robot.service << 'EOF'
 [Unit]
 Description=Pioneer Robot Bringup + Sensors (headless)
 After=network-online.target
@@ -296,10 +249,8 @@ RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
-```
+EOF
 
-Enable:
-```bash
 sudo systemctl daemon-reload
 sudo systemctl enable pioneer_robot.service
 sudo systemctl start pioneer_robot.service
@@ -315,23 +266,23 @@ journalctl -u pioneer_robot.service -n 120 --no-pager -l
 
 # 8) Laptop operator workflow (dashboard)
 
-## 8.1 Verify robot topics are visible (laptop)
+## 8.1 Verify robot topics are visible
 ```bash
 source /opt/ros/jazzy/setup.bash
 export ROS_DOMAIN_ID=7
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 unset ROS_LOCALHOST_ONLY
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
-
 ros2 daemon stop
 ros2 daemon start
-
 ros2 topic list | egrep "(/scan|/oak/rgb/image_raw|/rear/image_raw)"
 ros2 topic hz /scan --window 50
 ```
 
 ## 8.2 Build the dashboard (laptop only)
-The dashboard package lives inside the `pioneer3` repo subdirectory. Use this command to build it — standard `colcon build` without `--base-paths` will not find it:
+
+The dashboard package lives inside the `pioneer3` repo subdirectory. Standard `colcon build` without `--base-paths` will **not** find it. Always use:
+
 ```bash
 cd ~/ros2_ws
 colcon build --symlink-install \
@@ -339,79 +290,102 @@ colcon build --symlink-install \
   --base-paths src/pioneer3/pioneer_dashboard_app
 ```
 
-Add this as an alias in `~/.bashrc` for convenience:
+Or use the alias from §5:
 ```bash
-alias build_dashboard='cd ~/ros2_ws && colcon build --symlink-install --packages-select pioneer_dashboard_app --base-paths src/pioneer3/pioneer_dashboard_app'
+build_dashboard
 ```
 
+**Do not** use `--packages-select pioneer3 pioneer_dashboard_app` on the laptop — `pioneer3` requires `pioneer_msgs` and ARIA which are robot-only dependencies and will fail to build on the laptop.
+
 ## 8.3 Run the dashboard (laptop)
+
 ```bash
 source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=7
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+unset ROS_LOCALHOST_ONLY
+export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+ros2 daemon stop
+ros2 daemon start
+ros2 topic list | egrep "(/scan|/oak/rgb/image_raw|/rear/image_raw)"
 source ~/ros2_ws/install/setup.bash
-
-# If you get a Qt platform plugin error (Wayland), force XCB:
 export QT_QPA_PLATFORM=xcb
-
 ros2 run pioneer_dashboard_app pioneer_dashboard_app
 ```
 
-Verify subscriptions:
-```bash
-ros2 node info /pioneer_dashboard_app | sed -n '1,90p'
-```
-
 Dashboard defaults:
-- Front: `/oak/rgb/image_raw/compressed` *(default — low latency, decoded by Qt directly)*
-  - Alternative: `/oak/rgb/image_raw_local` (republished raw, also low latency)
-  - Alternative: `/oak/rgb/image_raw` (raw — avoid over network, causes lag)
+- Front: `/oak/rgb/image_raw/compressed` *(default — decoded directly by Qt, low latency)*
 - Rear: `/rear/image_raw`
 - Scan: `/scan`
 - cmd_vel: `/cmd_vel`
 
-**Smart topic routing:** the dashboard automatically detects whether the front topic ends in `/compressed` and subscribes as `sensor_msgs/CompressedImage` or `sensor_msgs/Image` accordingly. You can switch between them at runtime by editing the Front image field and clicking Apply / Reconnect — no rebuild needed.
+**Smart topic routing:** the dashboard automatically detects whether the front topic ends in `/compressed` and subscribes as `CompressedImage` or `Image` accordingly. Switch at runtime by editing the topic field and clicking **Apply / Reconnect**.
 
 ---
 
-# 9) Torch / cue light toggle
+# 9) Joystick control (PS4 DualShock 4)
 
-The torch is a SEAMAGIC rechargeable work light wired through a 5V relay module. The relay input is driven by Pioneer digital output pin **OD6** (User I/O connector pin 14). The relay is powered from pin 18 (Vcc, 5V) and GND from pin 20.
+The dashboard has integrated PS4 joystick support. The joystick is **optional** — if `/dev/input/js0` is not present the dashboard runs in GUI-only mode. A status label between the Topics box and the Teleop box shows connection state.
 
-**Important:** AUX power must be enabled on the Pioneer User Control Panel (press AUX1 until the red LED lights) for the 5V line on the IDC connector to be live. This is required for the relay to actuate.
+**The deadman checkbox must still be enabled in the GUI before the joystick can drive the robot.**
 
-## 9.1 How the toggle works
-The light has 3 modes cycled by its internal button: High → Low → Strobe → Off. The dashboard toggle works as follows:
+## 9.1 PS4 button/axis mapping
 
-- **TORCH ON** (green button): sends a single 300ms pulse to OD6 → relay closes briefly → light advances to High mode
-- **TORCH OFF** (red button): sends 3 pulses 500ms apart → cycles Low → Strobe → Off
+| Input | Index | Action |
+|---|---|---|
+| Left stick Y | Axis 1 | Forward / Back |
+| Left stick X | Axis 0 | Turn left / right |
+| L1 | Button 4 | Linear speed − 0.05 m/s |
+| R1 | Button 5 | Linear speed + 0.05 m/s |
+| L2 | Button 6 | Angular speed − 0.05 rad/s |
+| R2 | Button 7 | Angular speed + 0.05 rad/s |
+| Cross (✕) | Button 0 | Torch toggle (same as GUI button) |
+| Circle (○) | Button 1 | Stop robot |
+| Square (□) | Button 2 | Start / Stop trial (same as GUI button) |
+| Triangle (△) | Button 3 | Apply / Reconnect topics |
 
-Before trials, manually cycle the light to Off and leave it there. The dashboard ON button will always bring it to High on the first press.
+Slider changes from L1/R1/L2/R2 are reflected visually in the GUI sliders. Directional buttons visually depress when the stick is pushed.
 
-## 9.2 ROS services
-Two services are provided by the base controller:
+## 9.2 Verify joystick is detected
+```bash
+ls /dev/input/js0
+jstest /dev/input/js0    # install with: sudo apt install joystick
+```
+
+---
+
+# 10) Torch / cue light toggle
+
+The torch is a SEAMAGIC rechargeable work light wired through a 5V relay module driven by Pioneer digital output pin **OD6** (User I/O connector pin 14).
+
+**Important:** AUX power must be enabled on the Pioneer User Control Panel (press AUX1 until the red LED lights) for the 5V line on the IDC connector to be live.
+
+## 10.1 How the toggle works
+The light cycles: High → Low → Strobe → Off.
+- **TORCH ON** (green button / joystick ✕): single 300ms pulse → light goes to High
+- **TORCH OFF** (red button / joystick ✕): 3 pulses 500ms apart → cycles to Off
+
+Before trials, manually cycle the light to Off. The ON button will always bring it to High on the first press.
+
+## 10.2 ROS services
 
 | Service | Type | Effect |
 |---|---|---|
-| `/pioneer_base/torch_pulse` | `std_srvs/srv/Trigger` | Single pulse — turns light on (High mode) |
+| `/pioneer_base/torch_pulse` | `std_srvs/srv/Trigger` | Single pulse — turns light on |
 | `/pioneer_base/torch_off` | `std_srvs/srv/Trigger` | 3-pulse sequence — cycles to Off |
 
-Test from laptop:
 ```bash
-ros2 service list | grep torch
 ros2 service call /pioneer_base/torch_pulse std_srvs/srv/Trigger "{}"
 ros2 service call /pioneer_base/torch_off std_srvs/srv/Trigger "{}"
 ```
 
-## 9.3 Tunable parameters
-The pulse timing can be adjusted at runtime without rebuilding:
+## 10.3 Tunable parameters
 ```bash
-ros2 param set /pioneer_base torch_pulse_ms 300   # pulse width in ms (default 300)
-ros2 param set /pioneer_base torch_gap_ms 500     # gap between off-sequence pulses in ms (default 500)
+ros2 param set /pioneer_base torch_pulse_ms 300   # pulse width in ms
+ros2 param set /pioneer_base torch_gap_ms 500     # gap between off-sequence pulses
 ```
 
-If the light lands on the wrong mode after TORCH OFF, increase `torch_gap_ms` in 100ms increments until it reliably lands on Off.
-
-## 9.4 DIGOUT wiring reference
-From the Pioneer 3 manual, User I/O connector (20-pin latching IDC):
+## 10.4 DIGOUT wiring reference
 
 | Pin | Signal | Use |
 |---|---|---|
@@ -419,85 +393,57 @@ From the Pioneer 3 manual, User I/O connector (20-pin latching IDC):
 | 18 | Vcc (5V) | Relay VCC |
 | 20 | GND | Relay GND |
 
-The ARCOS DIGOUT command (#30) takes a two-byte argument: **high byte = bit mask (which pins to change), low byte = new values**. Both bytes must be set correctly or ARCOS ignores the command silently.
-
 ---
 
-# 10) Trial recording (LiDAR rosbag)
+# 11) Trial recording (LiDAR rosbag)
 
-Each experiment trial can be recorded and automatically transferred to the laptop using the **⏺ START TRIAL** / **⏹ STOP TRIAL** button in the dashboard.
+## 11.1 How it works
+- **⏺ START TRIAL** (blue button / joystick □): calls `/bag_recorder/start_recording` — starts `ros2 bag record /scan` with a timestamped name under `/home/easel/bags/`
+- **⏹ STOP TRIAL** (red button / joystick □): calls `/bag_recorder/stop_recording` — flushes the bag and rsyncs to `kush@192.168.1.8:~/bags/` automatically
 
-## 10.1 How it works
-- The `bag_recorder` node runs on the robot as part of the standard bringup.
-- Clicking **⏺ START TRIAL** calls `/bag_recorder/start_recording` — starts `ros2 bag record /scan` with a timestamped output name under `/home/easel/bags/`.
-- Clicking **⏹ STOP TRIAL** calls `/bag_recorder/stop_recording` — sends SIGINT to the bag process (clean flush), then `rsync`s the bag directory to `kush@192.168.1.8:~/bags/` automatically.
-- Bags are named `session_YYYYMMDD_HHMMSS` so every trial is uniquely identified.
-
-## 10.2 Prerequisites
-SSH key from robot to laptop must be set up (one-time):
+## 11.2 Prerequisites (one-time SSH key setup)
 ```bash
 # On robot
-ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519   # skip if key already exists
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
 ssh-copy-id kush@192.168.1.8
-# Test
 ssh -o BatchMode=yes kush@192.168.1.8 'echo OK'
-```
 
-Laptop must have SSH server running:
-```bash
 # On laptop
 sudo apt install -y openssh-server
 sudo systemctl enable ssh
 sudo systemctl start ssh
 ```
 
-## 10.3 ROS services
-
-| Service | Type | Effect |
-|---|---|---|
-| `/bag_recorder/start_recording` | `std_srvs/srv/Trigger` | Start recording `/scan` to timestamped bag |
-| `/bag_recorder/stop_recording` | `std_srvs/srv/Trigger` | Stop recording and rsync bag to laptop |
-
-Test from laptop:
-```bash
-ros2 service list | grep bag_recorder
-ros2 service call /bag_recorder/start_recording std_srvs/srv/Trigger "{}"
-# ... run trial ...
-ros2 service call /bag_recorder/stop_recording std_srvs/srv/Trigger "{}"
-```
-
-## 10.4 Tunable parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| `laptop_user` | `kush` | Username on laptop for rsync |
-| `laptop_ip` | `192.168.1.8` | Laptop IP address |
-| `laptop_dir` | `~/bags` | Destination directory on laptop |
-| `robot_dir` | `/home/easel/bags` | Where bags are saved on the robot |
-| `scan_topic` | `/scan` | Topic to record |
-
-## 10.5 Verify bags on laptop
-After stopping a trial:
+## 11.3 Verify bags on laptop
 ```bash
 ls ~/bags/
 ros2 bag info ~/bags/session_<timestamp>
 ```
 
+## 11.4 Tunable parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `laptop_user` | `kush` | Username on laptop for rsync |
+| `laptop_ip` | `192.168.1.8` | Laptop IP |
+| `laptop_dir` | `~/bags` | Destination on laptop |
+| `robot_dir` | `/home/easel/bags` | Where bags are saved on robot |
+| `scan_topic` | `/scan` | Topic to record |
+
 ---
 
-# 11) Laptop-first Git workflow (recommended)
+# 12) Laptop-first Git workflow
 
-## 11.1 Edit on laptop → push
+## 12.1 Edit on laptop → push
 ```bash
 cd ~/ros2_ws/src/pioneer3
-git pull                        # always pull before editing
-git status
+git pull                  # always pull before editing
 git add -A
 git commit -m "Describe your change"
 git push
 ```
 
-## 11.2 Robot pulls + rebuild pioneer3 + restart service
+## 12.2 Robot pulls + rebuilds pioneer3 + restarts service
 ```bash
 ssh -t easel@192.168.1.31 '
   source /opt/ros/jazzy/setup.bash &&
@@ -509,7 +455,7 @@ ssh -t easel@192.168.1.31 '
 '
 ```
 
-## 11.3 Rebuild dashboard on laptop only
+## 12.3 Rebuild dashboard on laptop only
 ```bash
 cd ~/ros2_ws
 colcon build --symlink-install \
@@ -519,183 +465,113 @@ colcon build --symlink-install \
 
 No robot-side rebuild or restart needed for dashboard-only changes.
 
----
-
-# 12) Troubleshooting (field-focused)
-
-## 12.1 "Dashboard works but no LiDAR in the widget"
-1) Confirm `/scan` is publishing (laptop):
-```bash
-ros2 topic hz /scan --window 50
-```
-2) Confirm dashboard subscribes:
-```bash
-ros2 node info /pioneer_dashboard_app | sed -n '1,120p'
-```
-3) Confirm QoS match:
-```bash
-ros2 topic info /scan -v | head -n 90
-```
-
-## 12.2 LiDAR timeout / intermittent scan (SL_RESULT_OPERATION_TIMEOUT)
-A very common cause on Ubuntu is **ModemManager** grabbing `/dev/ttyUSB0`.
-On robot:
-```bash
-sudo systemctl stop ModemManager || true
-sudo systemctl disable ModemManager || true
-sudo systemctl restart pioneer_robot.service
-```
-Then verify:
-```bash
-ros2 topic hz /scan --window 50
-```
-
-## 12.3 Rear camera missing
-Robot:
-```bash
-v4l2-ctl --list-devices
-ls -l /dev/video*
-```
-Laptop:
-```bash
-ros2 topic list | grep rear
-```
-
-## 12.4 Duplicate node-name warnings
-Ensure you do not run multiple bringups (service + manual) at the same time.
-
-## 12.5 Front camera "lags" but topics look healthy
-This usually means you're viewing **raw** frames over the network, or the OAK pipeline is doing extra work.
-
-1) Check the compressed rate (laptop):
-```bash
-timeout 8 ros2 topic hz /oak/rgb/image_raw/compressed --window 50
-```
-
-2) Prefer the compressed workflow:
-- Use `/oak/rgb/image_raw/compressed` directly in the dashboard **or**
-- Use §6.1 Option B to republish compressed → `/oak/rgb/image_raw_local`
-
-3) If you still need more headroom:
-- Reduce OAK resolution / FPS in `config/oak_rgb_only.yaml`
-- Keep the dashboard "latest-only" buffering + render tick enabled (drops old frames instead of building latency)
-
-## 12.6 Torch button does nothing (dashboard stays grey)
-Click **Apply / Reconnect** in the Topics box to recreate the service clients, then try again.
-
-## 12.7 Torch relay clicks but light doesn't respond
-1) Confirm AUX1 LED is lit on the Pioneer User Control Panel. The 5V line on the IDC connector (pin 18) is AUX-switched — without AUX power the relay has no coil voltage.
-2) If AUX is on and the relay clicks but the light doesn't change mode, increase `torch_gap_ms`:
-```bash
-ros2 param set /pioneer_base torch_gap_ms 700
-```
-3) If the relay doesn't click at all, measure pin 14 to pin 20 with a multimeter while calling `torch_pulse`. Should pulse 0V → 5V → 0V. If it stays high permanently, restart the service:
+## 12.4 Restart service on robot only
 ```bash
 ssh -t easel@192.168.1.31 'sudo systemctl restart pioneer_robot.service'
 ```
 
-## 12.8 colcon can't find pioneer_dashboard_app
-The dashboard is a subdirectory inside `pioneer3`, not a top-level package. Always build it with the explicit `--base-paths` flag:
+---
+
+# 13) Troubleshooting
+
+## 13.1 "Dashboard works but no LiDAR in the widget"
+```bash
+ros2 topic hz /scan --window 50
+ros2 node info /pioneer_dashboard_app | sed -n '1,120p'
+ros2 topic info /scan -v | head -n 90
+```
+
+## 13.2 LiDAR timeout (SL_RESULT_OPERATION_TIMEOUT)
+ModemManager grabbing `/dev/ttyUSB0` is the most common cause:
+```bash
+sudo systemctl stop ModemManager || true
+sudo systemctl disable ModemManager || true
+sudo systemctl restart pioneer_robot.service
+ros2 topic hz /scan --window 50
+```
+
+## 13.3 Rear camera missing
+```bash
+# Robot
+v4l2-ctl --list-devices
+ls -l /dev/video*
+# Laptop
+ros2 topic list | grep rear
+```
+
+## 13.4 Front camera lags
+Use `/oak/rgb/image_raw/compressed` in the dashboard front topic field — this is the default and recommended setting. Raw over the network causes lag.
+
+## 13.5 Torch button does nothing
+Click **Apply / Reconnect** to recreate service clients, then try again. Also confirm AUX1 LED is lit on the Pioneer User Control Panel.
+
+## 13.6 Torch relay clicks but light doesn't respond
+```bash
+ros2 param set /pioneer_base torch_gap_ms 700
+```
+Increase in 100ms steps until the light reliably lands on Off.
+
+## 13.7 colcon can't find pioneer_dashboard_app
+The dashboard is a subdirectory inside `pioneer3`. Always build it with `--base-paths`:
 ```bash
 colcon build --symlink-install \
   --packages-select pioneer_dashboard_app \
   --base-paths src/pioneer3/pioneer_dashboard_app
 ```
 
-## 12.9 Trial recording — bag transfer fails
-1) Confirm SSH key is set up from robot to laptop (§10.2).
-2) Confirm laptop SSH server is running:
+## 13.8 Trial recording — bag transfer fails
 ```bash
-systemctl status ssh --no-pager
-```
-3) Test connectivity manually from robot:
-```bash
+# Test SSH from robot to laptop
 ssh -o BatchMode=yes kush@192.168.1.8 'echo OK'
-```
-4) If the bag was saved but not transferred, it stays at `/home/easel/bags/` on the robot — manually rsync it:
-```bash
+# Manual rsync if needed
 rsync -avz easel@192.168.1.31:~/bags/ ~/bags/
 ```
 
-## 12.10 START TRIAL button has no effect
-Confirm `bag_recorder` node is running:
+## 13.9 Joystick not detected
 ```bash
-ros2 node list | grep bag_recorder
-ros2 service list | grep bag_recorder
-```
-If missing, the node didn't start — check the journal:
-```bash
-ssh -t easel@192.168.1.31 'journalctl -u pioneer_robot.service -n 50 --no-pager'
+ls /dev/input/js0
+# If missing, replug controller and check:
+cat /proc/bus/input/devices | grep -A 4 "js\|Joystick\|Controller"
 ```
 
 ---
 
-# Appendix 2 — ARIA install paths (choose one)
+# Appendix A — Pioneer 3-DX speed specifications
 
-There are two common ways ARIA shows up on a Pioneer system. Use **one**.
-
-## A2.1 Option A: "System ARIA" already installed (common in labs)
-This project expects ARIA to resolve to:
-
-- Header: `/usr/local/Aria/include/Aria.h`
-- Library: `/usr/local/Aria/lib/libAria.so` (or similar)
-
-Verify:
-```bash
-ls -l /usr/local/Aria/include/Aria.h
-ls -l /usr/local/Aria/lib | grep -i aria
-```
-If these exist, you can build the workspace as-is.
-
-## A2.2 Option B: Build ARIA/AriaCoda from source
-Some environments use the AriaCoda distribution (or equivalent). A typical pattern is:
-
-```bash
-cd ~
-git clone <YOUR_LAB_ARIA_REPO_OR_VENDOR_URL> AriaCoda
-cd AriaCoda
-make -j"$(nproc)"
-sudo make install
-sudo ldconfig
-```
-Then verify the same expected paths (`/usr/local/Aria/...`) exist.
-
-> **Note**: Different lab distributions may install under `/usr/local/include/Aria` and `/usr/local/lib`.
-> If so, update your CMake include/link paths accordingly (or add symlinks).
+| Parameter | Value |
+|---|---|
+| Max continuous speed | 1.2 m/s |
+| Peak speed | 1.6 m/s |
+| ARIA `setTransVelMax` in base_controller | 1200 mm/s (1.2 m/s) |
+| ARIA `setRotVelMax` in base_controller | 300 deg/s |
+| Dashboard linear slider range | 0 – 1.20 m/s (default 0.80 m/s) |
+| Dashboard angular slider range | 0 – 3.00 rad/s (default 1.20 rad/s) |
 
 ---
 
-# Appendix 3 — Known-good topic names and QoS (quick checklist)
+# Appendix B — Known-good topic names and QoS
 
-When the robot stack is healthy, you should see these topics from the laptop:
+## B.1 Required topics
+- `/scan` — `sensor_msgs/msg/LaserScan`
+- `/oak/rgb/image_raw` — `sensor_msgs/msg/Image`
+- `/oak/rgb/image_raw/compressed` — `sensor_msgs/msg/CompressedImage` *(preferred)*
+- `/rear/image_raw` — `sensor_msgs/msg/Image`
+- `/cmd_vel` — `geometry_msgs/msg/Twist`
+- `/pioneer_base/torch_pulse` — `std_srvs/srv/Trigger`
+- `/pioneer_base/torch_off` — `std_srvs/srv/Trigger`
+- `/bag_recorder/start_recording` — `std_srvs/srv/Trigger`
+- `/bag_recorder/stop_recording` — `std_srvs/srv/Trigger`
 
-## A3.1 Required topics (names)
-- LiDAR scan: `/scan` (`sensor_msgs/msg/LaserScan`)
-- Front RGB: `/oak/rgb/image_raw` (`sensor_msgs/msg/Image`)
-- Rear RGB: `/rear/image_raw` (`sensor_msgs/msg/Image`)
-- Velocity command: `/cmd_vel` (`geometry_msgs/msg/Twist`)
-- Torch on service: `/pioneer_base/torch_pulse` (`std_srvs/srv/Trigger`)
-- Torch off service: `/pioneer_base/torch_off` (`std_srvs/srv/Trigger`)
-- Trial start: `/bag_recorder/start_recording` (`std_srvs/srv/Trigger`)
-- Trial stop: `/bag_recorder/stop_recording` (`std_srvs/srv/Trigger`)
-
-List + types:
 ```bash
 ros2 topic list -t | egrep "(/scan|/oak/rgb/image_raw|/rear/image_raw|/cmd_vel)"
 ros2 service list | egrep "(torch|bag_recorder)"
 ```
 
-## A3.2 QoS expectations (important)
-- `/scan` publisher: **RELIABLE**
-- Dashboard subscriber to `/scan`: **RELIABLE**
-- Image topics may be RELIABLE or BEST_EFFORT depending on driver; the dashboard is designed to work with both.
+## B.2 QoS
+- `/scan` publisher and dashboard subscriber: **RELIABLE**
+- Image topics: RELIABLE or BEST_EFFORT depending on driver — dashboard handles both
 
-Check `/scan` QoS:
-```bash
-ros2 topic info /scan -v | head -n 90
-```
-
-## A3.3 Health check commands (fast)
+## B.3 Health check
 ```bash
 ros2 topic hz /scan --window 50
 ros2 node info /pioneer_dashboard_app | sed -n '1,90p'
@@ -704,22 +580,18 @@ ros2 service list | grep -E "(torch|bag_recorder)"
 
 ---
 
-# Appendix 4 — Day-of-experiment quick start (minimal steps)
+# Appendix C — Day-of-experiment quick start
 
-This is the "don't think, just run" checklist.
-
-## A4.1 Robot (power-on)
-1. Power on the Pioneer 3-DX.
-2. Press **AUX1** on the User Control Panel until the red LED lights — this enables 5V for the relay.
-3. Wait ~1–2 minutes for Linux + `systemd` bringup to complete.
-4. (Optional) Confirm bringup is running:
+## C.1 Robot (power-on)
+1. Power on the Pioneer 3-DX
+2. Press **AUX1** on User Control Panel until red LED lights (enables 5V for relay)
+3. Wait ~1–2 min for systemd bringup
+4. Optional confirm:
 ```bash
 ssh -t easel@192.168.1.31 'systemctl status pioneer_robot.service --no-pager'
 ```
 
-## A4.2 Laptop (operator)
-Open a terminal on the same network and run:
-
+## C.2 Laptop (operator) — exact sequence
 ```bash
 source /opt/ros/jazzy/setup.bash
 export ROS_DOMAIN_ID=7
@@ -728,49 +600,53 @@ unset ROS_LOCALHOST_ONLY
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 ros2 daemon stop
 ros2 daemon start
-
-# Verify the 3 key feeds
 ros2 topic list | egrep "(/scan|/oak/rgb/image_raw|/rear/image_raw)"
-ros2 topic hz /scan --window 50
-```
-
-If the three topics exist and `/scan` shows a stable Hz, run the dashboard:
-
-```bash
 source ~/ros2_ws/install/setup.bash
 export QT_QPA_PLATFORM=xcb
 ros2 run pioneer_dashboard_app pioneer_dashboard_app
 ```
 
-## A4.3 Torch pre-trial check
-Before participants arrive:
-1. Manually cycle the light to **Off** using its physical button.
-2. Click **TORCH ON** in the dashboard — light should go to High (800 lm).
-3. Click **TORCH OFF** — light should cycle back to Off.
-4. If it lands on the wrong mode, run:
-```bash
-ros2 param set /pioneer_base torch_gap_ms 700
-```
-and repeat the test.
+## C.3 Torch pre-trial check
+1. Manually cycle the light to **Off** using its physical button
+2. Click **TORCH ON** — light should go to High
+3. Click **TORCH OFF** — light should return to Off
+4. If wrong mode: `ros2 param set /pioneer_base torch_gap_ms 700`
 
-## A4.4 Running a trial
-1. Click **⏺ START TRIAL** (blue) in the dashboard — recording begins on the robot.
-2. Run the trial.
-3. Click **⏹ STOP TRIAL** (red) — recording stops, bag is transferred to `~/bags/` on your laptop automatically.
-4. Verify on laptop:
-```bash
-ls ~/bags/
-```
+## C.4 Running a trial
+1. Click **⏺ START TRIAL** (or joystick □) — recording begins on robot
+2. Run the trial
+3. Click **⏹ STOP TRIAL** (or joystick □) — recording stops, bag transfers to `~/bags/`
+4. Verify: `ls ~/bags/`
 
-## A4.5 If something is missing
-- If `/scan` is missing or unstable: reboot robot or disable ModemManager (§12.2)
-- If cameras are missing: replug USB cameras and restart `pioneer_robot.service`
-- If torch doesn't respond: check AUX1 LED on User Control Panel (§12.7)
-- If trial recording fails: check SSH key setup (§10.2) and laptop SSH server (§12.9)
+## C.5 If something is missing
+- `/scan` missing or unstable → disable ModemManager (§13.2)
+- Cameras missing → replug USB cameras and restart service
+- Torch not responding → check AUX1 LED (§10)
+- Bag transfer fails → check SSH key setup (§11.2)
 
-Restart service (robot):
+Restart service:
 ```bash
 ssh -t easel@192.168.1.31 'sudo systemctl restart pioneer_robot.service'
 ```
 
 ---
+
+# Appendix D — ARIA install paths
+
+## D.1 Option A: System ARIA already installed
+```bash
+ls -l /usr/local/Aria/include/Aria.h
+ls -l /usr/local/Aria/lib | grep -i aria
+```
+
+## D.2 Option B: Build ARIA/AriaCoda from source
+```bash
+cd ~
+git clone <YOUR_LAB_ARIA_REPO> AriaCoda
+cd AriaCoda
+make -j"$(nproc)"
+sudo make install
+sudo ldconfig
+```
+
+> If ARIA installs under `/usr/local/include/Aria` and `/usr/local/lib` instead of `/usr/local/Aria/`, update the `include_directories` and `link_directories` in `CMakeLists.txt` accordingly.
